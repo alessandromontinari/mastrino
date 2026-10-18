@@ -2167,5 +2167,35 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   window.addEventListener('load', function () { navigator.serviceWorker.register('./sw.js').catch(function () {}); });
 }
 </script>
+<!-- install-bar -->
+<style>
+#ib{position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));z-index:2147483000;max-width:520px;margin:0 auto;
+  background:#0F5E73;color:#fff;border-radius:14px;padding:14px 14px 14px 16px;box-shadow:0 10px 30px rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.16);
+  display:none;align-items:center;gap:12px;font:inherit;font-size:15px;line-height:1.35}
+#ib.on{display:flex}
+#ib .ib-t{flex:1;min-width:0}
+#ib .ib-t b{display:block;font-size:15px}
+#ib .ib-t span{opacity:.82;font-size:13px}
+#ib button{font:inherit;font-size:14px;border:0;border-radius:10px;cursor:pointer;white-space:nowrap}
+#ib .ib-go{background:#fff;color:#0F5E73;font-weight:700;padding:10px 14px}
+#ib .ib-no{background:transparent;color:#fff;opacity:.8;padding:10px 6px}
+</style>
+<div id="ib" role="dialog" aria-label="Installa Mastrino"><div class="ib-t"><b>Installa Mastrino come app</b><span>Si apre a tutto schermo e funziona anche offline.</span></div>
+<button type="button" class="ib-no" id="ibNo">Non ora</button><button type="button" class="ib-go" id="ibGo">Installa</button></div>
+<script>
+(function () {
+  var bar = document.getElementById('ib'), ev = null;
+  var standalone = (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone;
+  if (standalone) return;
+  window.addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); ev = e; bar.classList.add('on'); });
+  window.addEventListener('appinstalled', function () { ev = null; bar.classList.remove('on'); });
+  document.getElementById('ibNo').addEventListener('click', function () { bar.classList.remove('on'); });
+  document.getElementById('ibGo').addEventListener('click', function () {
+    if (!ev) { bar.classList.remove('on'); return; }
+    var e = ev; ev = null; bar.classList.remove('on');
+    try { Promise.resolve(e.prompt()).catch(function () {}); } catch (x) {}
+  });
+})();
+</script>
 </body>
 </html>
