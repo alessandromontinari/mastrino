@@ -295,10 +295,19 @@ function guessInstrument(isin, desc) {
 var SCHED = {};
 function couponSchedule(ins) {
   if (!ins.maturity || !ins.coupon || !ins.freq) return null;
-  var key = ins.isin + '|' + ins.maturity + '|' + ins.freq + '|' + (ins.issueDate || '');
+  var key = ins.isin + '|' + ins.maturity + '|' + ins.freq + '|' + (ins.issueDate || '') + '|' + (ins.firstCoupon || '');
   if (SCHED[key]) return SCHED[key];
   var mat = dayOf(ins.maturity), step = 12 / ins.freq, out = [], lim = ins.issueDate ? dayOf(ins.issueDate) : mat - 365 * 60;
+  if (ins.firstCoupon) lim = Math.min(lim, dayOf(ins.firstCoupon) - 400);
   for (var k = 0; k < 2000; k++) { var dd = addMonths(mat, -k * step); out.unshift(dd); if (dd <= lim) break; }
+  /* irregular first coupon: nothing is paid before it, and it covers issue date → first coupon date
+     (schedule becomes [issue, first coupon, regular dates…]) */
+  if (ins.firstCoupon) {
+    var f = dayOf(ins.firstCoupon);
+    out = out.filter(function (x) { return x >= f - 7; });
+    if (!out.length || Math.abs(out[0] - f) > 7) out.unshift(f);
+    out.unshift(ins.issueDate && dayOf(ins.issueDate) < out[0] ? dayOf(ins.issueDate) : addMonths(out[0], -step));
+  }
   SCHED[key] = out;
   return out;
 }
@@ -309,9 +318,23 @@ function couponPeriod(ins, d) {
   var issue = ins.issueDate ? dayOf(ins.issueDate) : -1e9;
   return { prev: s[lo], next: s[hi], start: Math.max(s[lo], issue) };
 }
+/* coupon period length relative to a regular one: >1 for a long first coupon, <1 for a short one */
+function cpnFactor(ins, prev, next) {
+  if (!ins.firstCoupon || !ins.issueDate) return 1;
+  var s = couponSchedule(ins); if (!s || prev !== s[0] || next !== s[1]) return 1;
+  var step = 12 / ins.freq, p1 = addMonths(next, -step);
+  if (prev >= p1) return (next - prev) / (next - p1);                 /* short (or regular) first period */
+  var p2 = addMonths(p1, -step); return 1 + (p1 - prev) / (p1 - p2);  /* long first period: one full coupon plus the extra days */
+}
+/* coupon per 100 of nominal paid on schedule date cd (or on a manual coupon date close to it) */
+function cpnPer100(ins, cd) {
+  var base = ins.coupon / ins.freq, s = couponSchedule(ins); if (!s) return base;
+  for (var i = 1; i < s.length; i++) if (Math.abs(s[i] - cd) <= 10) return base * cpnFactor(ins, s[i - 1], s[i]);
+  return base;
+}
 function accruedPer100(ins, d) {
   var p = couponPeriod(ins, d); if (!p || d < p.start) return 0;
-  return ins.coupon / ins.freq * (d - p.start) / (p.next - p.prev);
+  return ins.coupon / ins.freq * cpnFactor(ins, p.prev, p.next) * (d - p.start) / (p.next - p.prev);
 }
 function scartoPer100(ins, d) {
   if (!ins.issuePrice || !ins.issueDate || !ins.maturity || ins.issuePrice >= 100) return 0;
@@ -501,10 +524,10 @@ function runPortfolio(st, pfId, movs, start, today, prices) {
         ledger.push({ ev: ev, cash: g - t }); break;
       case 'CEDOLA':
         ins = getIns(ev.isin || m.isin, m.desc);
-        if (ev.auto) { g = ev.qty * ins.coupon / ins.freq / 100; t = g * incomeRate(ins); }
+        if (ev.auto) { g = ev.qty * cpnPer100(ins, ev.day) / 100; t = g * incomeRate(ins); }
         else {
           g = num(m.amount) !== null ? Math.abs(m.amount) : null;
-          if (g === null && ins && ins.coupon && ins.freq) g = heldBefore(m.isin, ev.day) * ins.coupon / ins.freq / 100;
+          if (g === null && ins && ins.coupon && ins.freq) g = heldBefore(m.isin, ev.day) * cpnPer100(ins, ev.day) / 100;
           g = g || 0; t = num(m.tax) !== null ? Math.abs(m.tax) : g * incomeRate(ins);
         }
         cash += g - t; INC[idx] += g - t;
@@ -702,7 +725,7 @@ function periodMetrics(series, i0, i1, rf, idx) {
 function bondFlows(ins, d) {
   var s = couponSchedule(ins); if (!s) return null;
   var out = [];
-  s.forEach(function (cd) { if (cd > d) out.push([cd, ins.coupon / ins.freq]); });
+  s.forEach(function (cd, i) { if (cd > d && i > 0) { var c = cpnPer100(ins, cd); out.push([cd, c, c]); } });
   if (out.length) out[out.length - 1][1] += 100;
   return out;
 }
@@ -711,7 +734,7 @@ function bondYield(ins, clean, d, net) {
   var rt = incomeRate(ins), dirty = clean + accruedPer100(ins, d);
   var cf = fl.map(function (f, i) {
     var c = f[1];
-    if (net) { var cpn = ins.coupon / ins.freq; c = c - cpn * rt; if (i === fl.length - 1 && clean < 100) c -= (100 - clean) * rt; }
+    if (net) { c = c - f[2] * rt; if (i === fl.length - 1 && clean < 100) c -= (100 - clean) * rt; }
     return [(f[0] - d) / 365, c];
   });
   function pv(y) { var s = 0; cf.forEach(function (x) { s += x[1] / Math.pow(1 + y, x[0]); }); return s; }
@@ -731,7 +754,7 @@ function futureFlows(res, pfId, horizonDays) {
     var rt = incomeRate(ins), mat = dayOf(ins.maturity);
     s.forEach(function (cd) {
       if (cd <= t || cd > lim) return;
-      var g = p.qty * ins.coupon / ins.freq / 100;
+      var g = p.qty * cpnPer100(ins, cd) / 100;
       out.push({ day: cd, kind: 'cedola', desc: ins.name, gross: g, net: g * (1 - rt), pf: p.pf });
       if (cd === mat) out.push({ day: cd, kind: 'rimborso', desc: ins.name, gross: p.qty, net: p.qty, pf: p.pf });
     });
@@ -800,7 +823,7 @@ function rebalance(r, targets, band, extra, zainLeft) {
 
 /* ================= CSV import / export ================= */
 var CSV_COLS = ['portafoglio', 'data', 'data_valuta', 'tipo', 'isin', 'descrizione', 'quantita', 'prezzo', 'commissioni', 'rateo', 'rit_rateo', 'rit_scarto', 'tasse', 'importo',
-  'tasso', 'scadenza', 'interessi', 'strumento', 'classe', 'cedola', 'frequenza', 'data_emissione', 'prezzo_emissione', 'quota_stato', 'note'];
+  'tasso', 'scadenza', 'interessi', 'strumento', 'classe', 'cedola', 'frequenza', 'data_emissione', 'prezzo_emissione', 'quota_stato', 'note', 'prima_cedola'];
 var COL_SYN = {
   portafoglio: ['portafoglio', 'portfolio', 'conto', 'intestatario'],
   data: ['data', 'data_operazione', 'data_ordine', 'date'],
@@ -824,6 +847,7 @@ var COL_SYN = {
   cedola: ['cedola', 'coupon'],
   frequenza: ['frequenza', 'freq', 'frequenza_cedola'],
   data_emissione: ['data_emissione', 'emissione'],
+  prima_cedola: ['prima_cedola', 'data_prima_cedola', 'first_coupon', 'primo_stacco'],
   prezzo_emissione: ['prezzo_emissione'],
   quota_stato: ['quota_stato', 'quota_titoli_di_stato'],
   note: ['note', 'notes']
@@ -885,6 +909,7 @@ function makeNumParser(decimalComma) {
    A time after the date (Excel sometimes adds "0:00:00") is ignored. */
 var DATE_RX = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/;
 var EXCEL_DAY0 = Math.round(Date.UTC(1899, 11, 30) / DAYMS);
+var MONTH_NUM = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12, gen: 1, mag: 5, giu: 6, lug: 7, ago: 8, set: 9, ott: 10, dic: 12 };
 function cleanDate(raw) { return String(raw == null ? '' : raw).trim().replace(/[ T]+\d{1,2}[:.]\d{2}(?:[:.]\d{2})?(?:\s*[AaPp]\.?[Mm]\.?)?$/, '').trim(); }
 function parseDateIT(raw, order) {
   var s = cleanDate(raw);
@@ -893,6 +918,8 @@ function parseDateIT(raw, order) {
   if (m) return valid(+m[1], +m[2], +m[3]);
   m = s.match(DATE_RX);
   if (m) { var y = +m[3]; if (y < 100) y += y < 70 ? 2000 : 1900; return order === 'mdy' ? valid(y, +m[1], +m[2]) : valid(y, +m[2], +m[1]); }
+  m = s.match(/^(\d{1,2})[\s\-\/.]+([a-z]{3,9})\.?[\s\-\/.,]+(\d{2,4})$/i);   /* 12-Jan-21, 1 dic 2032 (Excel "d-mmm-yy") */
+  if (m && MONTH_NUM[m[2].slice(0, 3).toLowerCase()]) { var y2 = +m[3]; if (y2 < 100) y2 += y2 < 70 ? 2000 : 1900; return valid(y2, MONTH_NUM[m[2].slice(0, 3).toLowerCase()], +m[1]); }
   var k = s.replace(/[\s'’]/g, '').match(/^(\d{1,3}(?:[.,]\d{3})+|\d+)(?:[.,]\d+)?$/);
   if (k) { var serial = +k[1].replace(/[.,]/g, ''); if (serial > 20000 && serial < 80000) return isoOf(EXCEL_DAY0 + serial); }
   return undefined;
@@ -950,7 +977,7 @@ function parseImport(text) {
   var decimalComma = delim === ';' || (delim === '\t' && body.some(function (r) { return numericCols.some(function (c) { return map[c] !== undefined && /\d,\d/.test(r.cells[map[c]] || ''); }); }));
   var N = makeNumParser(decimalComma);
   var dateCells = [];
-  body.forEach(function (r) { ['data', 'data_valuta', 'scadenza', 'data_emissione'].forEach(function (c) { if (map[c] !== undefined && r.cells[map[c]]) dateCells.push(r.cells[map[c]]); }); });
+  body.forEach(function (r) { ['data', 'data_valuta', 'scadenza', 'data_emissione', 'prima_cedola'].forEach(function (c) { if (map[c] !== undefined && r.cells[map[c]]) dateCells.push(r.cells[map[c]]); }); });
   var det = detectDateOrder(dateCells, dateHint(text));
   out.dateOrder = det.order; out.dateFmt = fmtName(det); out.dateHow = det.how;
   if (dateWarning(det)) out.warnings.push({ line: 0, msg: dateWarning(det) });
@@ -973,7 +1000,7 @@ function parseImport(text) {
       var cls = synLookup(CLASS_SYN, g('classe')); if (g('classe') && !cls) out.warnings.push({ line: r.line, msg: 'Classe “' + g('classe') + '” non riconosciuta.' }); if (cls) ins.cls = cls;
       var cp = n('cedola'), fq = n('frequenza'), ip = n('prezzo_emissione'), qs = n('quota_stato');
       if (cp !== null) ins.coupon = cp; if (fq !== null) ins.freq = fq; if (ip !== null) ins.issuePrice = ip; if (qs !== null) ins.govShare = qs;
-      var mat = d('scadenza'), iss = d('data_emissione'); if (mat) ins.maturity = mat; if (iss) ins.issueDate = iss;
+      var mat = d('scadenza'), iss = d('data_emissione'), fc = d('prima_cedola'); if (mat) ins.maturity = mat; if (iss) ins.issueDate = iss; if (fc) ins.firstCoupon = fc;
       if (bad) return;
       out.instruments[isin] = Object.assign(out.instruments[isin] || {}, ins);
       out.counts.TITOLO = (out.counts.TITOLO || 0) + 1;
@@ -985,7 +1012,8 @@ function parseImport(text) {
     var mv = { pf: pf, date: date, vdate: d('data_valuta'), type: type, isin: isin || null, desc: g('descrizione') || null, qty: n('quantita'), price: n('prezzo'), fees: n('commissioni'),
       rateo: n('rateo'), ritRateo: n('rit_rateo'), ritScarto: n('rit_scarto'), tax: n('tasse'), amount: n('importo'), rate: n('tasso'), maturity: d('scadenza'), payMode: g('interessi') || null, note: g('note') || null, seq: seq++, src: 'csv', line: r.line };
     if (bad) return;
-    if ((type === 'ACQUISTO' || type === 'VENDITA') && (!isin || !(Math.abs(mv.qty) > 0) || !(mv.price > 0))) { err(type === 'ACQUISTO' ? 'Acquisto: servono ISIN, quantità e prezzo.' : 'Vendita: servono ISIN, quantità e prezzo.'); return; }
+    if (type === 'ACQUISTO' && isin && Math.abs(mv.qty) > 0 && mv.price === 0) out.warnings.push({ line: r.line, msg: 'Acquisto a prezzo zero: lo tratto come titoli ricevuti gratis (abbassano il prezzo medio di carico). Se invece arrivano da un altro conto, metti il loro prezzo di carico.' });
+    else if ((type === 'ACQUISTO' || type === 'VENDITA') && (!isin || !(Math.abs(mv.qty) > 0) || !(mv.price > 0))) { err(type === 'ACQUISTO' ? 'Acquisto: servono ISIN, quantità e prezzo.' : 'Vendita: servono ISIN, quantità e prezzo.'); return; }
     if ((type === 'CEDOLA' || type === 'DIVIDENDO' || type === 'RIMBORSO') && !isin) { err(type.charAt(0) + type.slice(1).toLowerCase() + ': serve l’ISIN.'); return; }
     if (type === 'DIVIDENDO' && !(Math.abs(mv.amount) > 0)) { err('Dividendo: serve l’importo lordo.'); return; }
     if ((type === 'VERSAMENTO' || type === 'PRELIEVO' || type === 'SPESA') && !(Math.abs(mv.amount) > 0)) { err(type.charAt(0) + type.slice(1).toLowerCase() + ': serve l’importo.'); return; }
@@ -1022,7 +1050,7 @@ function exportCSV(st) {
   Object.keys(st.instruments).sort().forEach(function (isin) {
     var x = st.instruments[isin], row = {};
     row.tipo = 'TITOLO'; row.isin = isin; row.descrizione = x.name; row.strumento = KIND_OUT[x.kind] || 'ALTRO'; row.classe = CLASS_OUT[x.cls] || 'altro';
-    row.cedola = fmtNumIT(x.coupon, 6); row.frequenza = x.freq || ''; row.scadenza = fmtDateIT(x.maturity); row.data_emissione = fmtDateIT(x.issueDate); row.prezzo_emissione = fmtNumIT(x.issuePrice, 6); row.quota_stato = x.govShare ? fmtNumIT(x.govShare, 2) : '';
+    row.cedola = fmtNumIT(x.coupon, 6); row.frequenza = x.freq || ''; row.scadenza = fmtDateIT(x.maturity); row.data_emissione = fmtDateIT(x.issueDate); row.prezzo_emissione = fmtNumIT(x.issuePrice, 6); row.prima_cedola = fmtDateIT(x.firstCoupon); row.quota_stato = x.govShare ? fmtNumIT(x.govShare, 2) : '';
     lines.push(CSV_COLS.map(function (c) { return csvCell(row[c]); }).join(';'));
   });
   st.movements.slice().sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : a.seq - b.seq; }).forEach(function (m) {
@@ -1072,10 +1100,13 @@ function parsePriceMatrix(text) {
   return out;
 }
 
-var EXAMPLE_CSV = "﻿# Mastrino - file di esempio per l'importazione dello storico\n# Le righe che iniziano con # vengono ignorate. Le righe possono stare in qualsiasi ordine: l'app le mette in ordine di data da sola.\n# Numeri con la virgola decimale (95,63). Date gg/mm/aaaa, mm/gg/aaaa (lo capisco da solo) o il numero di data di Excel (46294 = 29/09/2026). Lascia vuote le colonne che non servono.\n# TIPI: VERSAMENTO / PRELIEVO / ACQUISTO / VENDITA / CEDOLA / DIVIDENDO / RIMBORSO / DEPOSITO / CHIUSURA_DEPOSITO / SPESA / TITOLO\n# VERSAMENTO e PRELIEVO: importo. SPESA (es. bollo): importo e descrizione.\n# ACQUISTO e VENDITA: isin - quantita (pezzi oppure valore nominale per i bond) - prezzo (per i bond: per 100) - commissioni. Per i bond puoi copiare rateo - rit_rateo - rit_scarto dalla nota Directa (se li lasci vuoti li calcolo io). In una VENDITA puoi scrivere in tasse quanto ha trattenuto Directa: lo confronto col mio calcolo.\n# CEDOLA: facoltativa. Se non la scrivi la calcolo io dalle date di pagamento. Se la scrivi uso importo (lordo) e tasse della riga.\n# DIVIDENDO (anche le distribuzioni degli ETF obbligazionari): isin - importo lordo - tasse (se vuote applico il 26%, e il 12,5% sulla quota_stato dell'ETF).\n# RIMBORSO: facoltativo. Alla scadenza di un bond lo registro da solo.\n# DEPOSITO: descrizione (nome del deposito) - importo - tasso (lordo annuo in %) - scadenza (vuota = conto libero) - interessi: anticipati / scadenza / mensili / trimestrali / semestrali / annuali.\n# CHIUSURA_DEPOSITO: chiusura anticipata. descrizione uguale a quella del deposito - commissioni = eventuale penale.\n# TITOLO: scheda del titolo (facoltativa ma consigliata). strumento: ETF / ETC / STATO / OBBLIGAZIONE / AZIONE. classe: azionario / bond / bond lungo / bond breve / metalli / materie prime / altro.\n#   Per i bond: cedola (% annua) - frequenza (pagamenti all'anno) - scadenza - data_emissione e prezzo_emissione (servono per lo scarto di emissione). quota_stato: % di titoli di Stato dentro un ETF obbligazionario.\n# Gli esempi qui sotto mescolano le due operazioni vere delle tue note Directa del 29/09/2026 con dati di fantasia: sostituiscili con i tuoi.\nportafoglio;data;data_valuta;tipo;isin;descrizione;quantita;prezzo;commissioni;rateo;rit_rateo;rit_scarto;tasse;importo;tasso;scadenza;interessi;strumento;classe;cedola;frequenza;data_emissione;prezzo_emissione;quota_stato;note\n;;;TITOLO;IE00B4L5Y983;iShares Core MSCI World (SWDA);;;;;;;;;;;;ETF;azionario;;;;;;\n;;;TITOLO;IE00B579F325;Invesco Physical Gold ETC (SGLD);;;;;;;;;;;;ETC;metalli;;;;;;\n;;;TITOLO;IT0005433690;BTP TF 0,25% MZ28;;;;;;;;;;15/03/2028;;STATO;bond;0,25;2;15/03/2021;99,618;;Prezzo di emissione ricavato dallo scarto della tua nota Directa: verificalo\n;;;TITOLO;IE00B3RBWM25;Vanguard FTSE All-World a distribuzione (VWRL);;;;;;;;;;;;ETF;azionario;;;;;;\nAlessandro;29/09/2026;01/10/2026;ACQUISTO;IE00B4L5Y983;ISHARES CORE MSCI WORLD UCITS;178;129,05;0;;;;;;;;;;;;;;;;Dalla nota Directa 27212153552380\nAlessandro;29/09/2026;01/10/2026;ACQUISTO;IT0005433690;BTP TF 0,25% MZ28;104000;95,63;5;11,49;-1,44;-39,36;;;;15/03/2028;;;;;;;;;Dalla nota Directa 27212094051799: totale a debito 99.430,89\nAlessandro;10/01/2025;;VERSAMENTO;;Bonifico iniziale;;;;;;;;150000;;;;;;;;;;;\nAlessandro;15/01/2025;17/01/2025;ACQUISTO;IE00B579F325;INVESCO PHYSICAL GOLD ETC;60;230,50;5;;;;;;;;;;;;;;;;\nAlessandro;03/02/2025;05/02/2025;ACQUISTO;IE00B4L5Y983;ISHARES CORE MSCI WORLD UCITS;100;105,20;0;;;;;;;;;;;;;;;;\nAlessandro;07/04/2025;09/04/2025;VENDITA;IE00B4L5Y983;ISHARES CORE MSCI WORLD UCITS;50;96,80;0;;;;;;;;;;;;;;;;Perdita su ETF: va nello zainetto fiscale\nAlessandro;20/05/2026;22/05/2026;VENDITA;IE00B579F325;INVESCO PHYSICAL GOLD ETC;20;300,10;5;;;;;;;;;;;;;;;;Guadagno su ETC: assorbe la minusvalenza dell ETF\nAlessandro;02/03/2025;;DEPOSITO;;Conto deposito Banca Alfa 12 mesi;;;;;;;;30000;3,00;02/03/2026;scadenza;;;;;;;;\nAlessandro;31/12/2025;;SPESA;;Imposta di bollo 2025;;;;;;;;48,20;;;;;;;;;;;\nAlessandro;10/07/2026;;PRELIEVO;;Prelievo;;;;;;;;5000;;;;;;;;;;;\nMoglie;05/02/2025;;VERSAMENTO;;Bonifico iniziale;;;;;;;;100000;;;;;;;;;;;\nMoglie;07/02/2025;11/02/2025;ACQUISTO;IE00B3RBWM25;VANGUARD FTSE ALL-WORLD DIST;300;120,40;5;;;;;;;;;;;;;;;;\nMoglie;26/03/2025;;DIVIDENDO;IE00B3RBWM25;Dividendo VWRL;;;;;;;11,78;45,30;;;;;;;;;;;\nMoglie;01/04/2025;;DEPOSITO;;Conto deposito Banca Beta 24 mesi;;;;;;;;20000;3,20;01/04/2027;anticipati;;;;;;;;\nMoglie;10/06/2025;;DEPOSITO;;Conto libero Banca Gamma;;;;;;;;10000;2,50;;trimestrali;;;;;;;;\nMoglie;10/06/2026;;CHIUSURA_DEPOSITO;;Conto libero Banca Gamma;;;;;;;;;;;;;;;;;;;\nMoglie;15/12/2025;;VERSAMENTO;;Versamento mensile;;;;;;;;1000;;;;;;;;;;;\nMoglie;15/10/2025;;VERSAMENTO;;Versamento mensile;;;;;;;;1000;;;;;;;;;;;\nMoglie;15/11/2025;;VERSAMENTO;;Versamento mensile;;;;;;;;1000;;;;;;;;;;;\nMoglie;20/01/2026;22/01/2026;ACQUISTO;IE00B579F325;INVESCO PHYSICAL GOLD ETC;10;265,40;5;;;;;;;;;;;;;;;;\nMoglie;10/02/2026;12/02/2026;ACQUISTO;IT0005433690;BTP TF 0,25% MZ28;20000;95,20;5;;;;;;;;;;;;;;;;Rateo e ritenute lasciati vuoti: li calcola l app\nMoglie;16/03/2026;;CEDOLA;IT0005433690;Cedola BTP Mz28;;;;;;;3,13;25,00;;;;;;;;;;;Cedola scritta a mano. Quella di settembre la calcola l app\n";
+var EXAMPLE_CSV = "﻿# Mastrino - file di esempio per l'importazione dello storico\n# Le righe che iniziano con # vengono ignorate. Le righe possono stare in qualsiasi ordine: l'app le mette in ordine di data da sola.\n# Numeri con la virgola decimale (95,63). Date gg/mm/aaaa, mm/gg/aaaa (lo capisco da solo) o il numero di data di Excel (46294 = 29/09/2026). Lascia vuote le colonne che non servono.\n# TIPI: VERSAMENTO / PRELIEVO / ACQUISTO / VENDITA / CEDOLA / DIVIDENDO / RIMBORSO / DEPOSITO / CHIUSURA_DEPOSITO / SPESA / TITOLO\n# VERSAMENTO e PRELIEVO: importo. SPESA (es. bollo): importo e descrizione.\n# ACQUISTO e VENDITA: isin - quantita (pezzi oppure valore nominale per i bond) - prezzo (per i bond: per 100) - commissioni. Per i bond puoi copiare rateo - rit_rateo - rit_scarto dalla nota Directa (se li lasci vuoti li calcolo io). In una VENDITA puoi scrivere in tasse quanto ha trattenuto Directa: lo confronto col mio calcolo.\n# CEDOLA: facoltativa. Se non la scrivi la calcolo io dalle date di pagamento. Se la scrivi uso importo (lordo) e tasse della riga.\n# DIVIDENDO (anche le distribuzioni degli ETF obbligazionari): isin - importo lordo - tasse (se vuote applico il 26%, e il 12,5% sulla quota_stato dell'ETF).\n# RIMBORSO: facoltativo. Alla scadenza di un bond lo registro da solo.\n# DEPOSITO: descrizione (nome del deposito) - importo - tasso (lordo annuo in %) - scadenza (vuota = conto libero) - interessi: anticipati / scadenza / mensili / trimestrali / semestrali / annuali.\n# CHIUSURA_DEPOSITO: chiusura anticipata. descrizione uguale a quella del deposito - commissioni = eventuale penale.\n# TITOLO: scheda del titolo (facoltativa ma consigliata). strumento: ETF / ETC / STATO / OBBLIGAZIONE / AZIONE. classe: azionario / bond / bond lungo / bond breve / metalli / materie prime / altro.\n#   Per i bond: cedola (% annua) - frequenza (pagamenti all'anno) - scadenza - data_emissione e prezzo_emissione (servono per lo scarto di emissione). Se la prima cedola è irregolare aggiungi una colonna prima_cedola con la sua data. quota_stato: % di titoli di Stato dentro un ETF obbligazionario.\n# Gli esempi qui sotto mescolano le due operazioni vere delle tue note Directa del 29/09/2026 con dati di fantasia: sostituiscili con i tuoi.\nportafoglio;data;data_valuta;tipo;isin;descrizione;quantita;prezzo;commissioni;rateo;rit_rateo;rit_scarto;tasse;importo;tasso;scadenza;interessi;strumento;classe;cedola;frequenza;data_emissione;prezzo_emissione;quota_stato;note\n;;;TITOLO;IE00B4L5Y983;iShares Core MSCI World (SWDA);;;;;;;;;;;;ETF;azionario;;;;;;\n;;;TITOLO;IE00B579F325;Invesco Physical Gold ETC (SGLD);;;;;;;;;;;;ETC;metalli;;;;;;\n;;;TITOLO;IT0005433690;BTP TF 0,25% MZ28;;;;;;;;;;15/03/2028;;STATO;bond;0,25;2;15/03/2021;99,618;;Prezzo di emissione ricavato dallo scarto della tua nota Directa: verificalo\n;;;TITOLO;IE00B3RBWM25;Vanguard FTSE All-World a distribuzione (VWRL);;;;;;;;;;;;ETF;azionario;;;;;;\nAlessandro;29/09/2026;01/10/2026;ACQUISTO;IE00B4L5Y983;ISHARES CORE MSCI WORLD UCITS;178;129,05;0;;;;;;;;;;;;;;;;Dalla nota Directa 27212153552380\nAlessandro;29/09/2026;01/10/2026;ACQUISTO;IT0005433690;BTP TF 0,25% MZ28;104000;95,63;5;11,49;-1,44;-39,36;;;;15/03/2028;;;;;;;;;Dalla nota Directa 27212094051799: totale a debito 99.430,89\nAlessandro;10/01/2025;;VERSAMENTO;;Bonifico iniziale;;;;;;;;150000;;;;;;;;;;;\nAlessandro;15/01/2025;17/01/2025;ACQUISTO;IE00B579F325;INVESCO PHYSICAL GOLD ETC;60;230,50;5;;;;;;;;;;;;;;;;\nAlessandro;03/02/2025;05/02/2025;ACQUISTO;IE00B4L5Y983;ISHARES CORE MSCI WORLD UCITS;100;105,20;0;;;;;;;;;;;;;;;;\nAlessandro;07/04/2025;09/04/2025;VENDITA;IE00B4L5Y983;ISHARES CORE MSCI WORLD UCITS;50;96,80;0;;;;;;;;;;;;;;;;Perdita su ETF: va nello zainetto fiscale\nAlessandro;20/05/2026;22/05/2026;VENDITA;IE00B579F325;INVESCO PHYSICAL GOLD ETC;20;300,10;5;;;;;;;;;;;;;;;;Guadagno su ETC: assorbe la minusvalenza dell ETF\nAlessandro;02/03/2025;;DEPOSITO;;Conto deposito Banca Alfa 12 mesi;;;;;;;;30000;3,00;02/03/2026;scadenza;;;;;;;;\nAlessandro;31/12/2025;;SPESA;;Imposta di bollo 2025;;;;;;;;48,20;;;;;;;;;;;\nAlessandro;10/07/2026;;PRELIEVO;;Prelievo;;;;;;;;5000;;;;;;;;;;;\nMoglie;05/02/2025;;VERSAMENTO;;Bonifico iniziale;;;;;;;;100000;;;;;;;;;;;\nMoglie;07/02/2025;11/02/2025;ACQUISTO;IE00B3RBWM25;VANGUARD FTSE ALL-WORLD DIST;300;120,40;5;;;;;;;;;;;;;;;;\nMoglie;26/03/2025;;DIVIDENDO;IE00B3RBWM25;Dividendo VWRL;;;;;;;11,78;45,30;;;;;;;;;;;\nMoglie;01/04/2025;;DEPOSITO;;Conto deposito Banca Beta 24 mesi;;;;;;;;20000;3,20;01/04/2027;anticipati;;;;;;;;\nMoglie;10/06/2025;;DEPOSITO;;Conto libero Banca Gamma;;;;;;;;10000;2,50;;trimestrali;;;;;;;;\nMoglie;10/06/2026;;CHIUSURA_DEPOSITO;;Conto libero Banca Gamma;;;;;;;;;;;;;;;;;;;\nMoglie;15/12/2025;;VERSAMENTO;;Versamento mensile;;;;;;;;1000;;;;;;;;;;;\nMoglie;15/10/2025;;VERSAMENTO;;Versamento mensile;;;;;;;;1000;;;;;;;;;;;\nMoglie;15/11/2025;;VERSAMENTO;;Versamento mensile;;;;;;;;1000;;;;;;;;;;;\nMoglie;20/01/2026;22/01/2026;ACQUISTO;IE00B579F325;INVESCO PHYSICAL GOLD ETC;10;265,40;5;;;;;;;;;;;;;;;;\nMoglie;10/02/2026;12/02/2026;ACQUISTO;IT0005433690;BTP TF 0,25% MZ28;20000;95,20;5;;;;;;;;;;;;;;;;Rateo e ritenute lasciati vuoti: li calcola l app\nMoglie;16/03/2026;;CEDOLA;IT0005433690;Cedola BTP Mz28;;;;;;;3,13;25,00;;;;;;;;;;;Cedola scritta a mano. Quella di settembre la calcola l app\n";
 /* ================= guide ("Come funziona") ================= */
 function bondExample() {
-  var m = STATE.movements.filter(function (x) { var ins = STATE.instruments[x.isin]; return x.type === 'ACQUISTO' && isBond(ins) && ins.coupon && ins.maturity; })[0];
+  var m = STATE.movements.filter(function (x) {
+    var ins = STATE.instruments[x.isin]; if (x.type !== 'ACQUISTO' || !isBond(ins) || !ins.coupon || !ins.maturity) return false;
+    var pp = couponPeriod(ins, dayOf(x.vdate || x.date)); return pp && cpnFactor(ins, pp.prev, pp.next) === 1;
+  })[0];
   if (!m) return null;
   var ins = STATE.instruments[m.isin], vd = dayOf(m.vdate || m.date), p = couponPeriod(ins, vd);
   if (!p) return null;
@@ -1104,7 +1135,8 @@ var GUIDE = [
     return '<p>Le date di pagamento si ricavano a ritroso dalla scadenza (per i BTP ogni sei mesi). L’app registra una cedola se possedevi il titolo prima di quella data, guardando la data valuta degli acquisti e delle vendite.</p>' +
       '<div class="f">cedola lorda = nominale × cedola annua / pagamenti all’anno\ntasse = 12,5% (titoli di Stato e white list) oppure 26% (altre obbligazioni)</div>' +
       '<p>Esempio: 20.000 di nominale del BTP 0,25% → 20.000 × 0,25% / 2 = 25,00 € lordi, 3,13 € di tasse, 21,87 € netti.</p>' +
-      '<p>Se inserisci tu una cedola entro 10 giorni dalla data prevista, l’app usa la tua (con importo e tasse che hai scritto) al posto di quella calcolata. Per BTP Italia, BTP€i e altri titoli indicizzati spunta “Inserisco io le cedole” nella scheda.</p>';
+      '<p>Se inserisci tu una cedola entro 10 giorni dalla data prevista, l’app usa la tua (con importo e tasse che hai scritto) al posto di quella calcolata. Per BTP Italia, BTP€i e altri titoli indicizzati spunta “Inserisco io le cedole” nella scheda.</p>' +
+      '<p><b>Prima cedola irregolare.</b> Un titolo appena emesso può pagare una prima cedola più lunga o più corta delle altre (per esempio emesso ad aprile, con la prima cedola a luglio dell’anno dopo). Se scrivi nella scheda la data della prima cedola e la data di emissione, l’app non conta cedole prima di quella data e calcola la prima in proporzione ai giorni dall’emissione; anche il rateo parte dalla data di emissione.</p>';
   } },
   { g: 'Obbligazioni', id: 'ytm', t: 'Rendimento a scadenza', b: function () {
     return '<p>È il tasso annuo che rende il prezzo tel quel di oggi uguale al valore attuale di tutte le cedole future più il rimborso a 100. Dice quanto rende il titolo se lo tieni fino alla scadenza.</p>' +
@@ -1661,6 +1693,7 @@ function instrumentFields(ins, pre) {
     '<div class="field" data-bond><label for="' + pre + 'freq">Pagamenti all’anno</label><select class="inp" id="' + pre + 'freq">' + o([['1', '1 (annuale)'], ['2', '2 (semestrale)'], ['4', '4 (trimestrale)'], ['12', '12 (mensile)']], String(ins.freq || 2)) + '</select></div>' +
     '<div class="field" data-bond><label for="' + pre + 'mat">Scadenza</label><input class="inp" type="date" id="' + pre + 'mat" value="' + (ins.maturity || '') + '"></div>' +
     '<div class="field" data-bond><label for="' + pre + 'issd">Data di emissione</label><input class="inp" type="date" id="' + pre + 'issd" value="' + (ins.issueDate || '') + '"></div>' +
+    '<div class="field" data-bond><label for="' + pre + 'fcp">Prima cedola <small>solo se irregolare</small></label><input class="inp" type="date" id="' + pre + 'fcp" value="' + (ins.firstCoupon || '') + '"></div>' +
     '<div class="field" data-bond><label for="' + pre + 'issp">Prezzo di emissione <small>per 100</small></label><input class="inp" id="' + pre + 'issp" inputmode="decimal" value="' + (ins.issuePrice != null ? String(ins.issuePrice).replace('.', ',') : '') + '"></div>' +
     '<div class="field" data-etf><label for="' + pre + 'gov">Quota titoli di Stato <small>% (ETF obbligazionari)</small></label><input class="inp" id="' + pre + 'gov" inputmode="decimal" value="' + (ins.govShare ? String(ins.govShare).replace('.', ',') : '') + '"></div>' +
     '<label class="check field wide" data-bond for="' + pre + 'manc"><input type="checkbox" id="' + pre + 'manc"' + (ins.manualCoupons ? ' checked' : '') + '> Inserisco io le cedole (per BTP Italia, BTP€i e altri titoli indicizzati)</label>' +
@@ -1671,10 +1704,10 @@ function readInstrumentFields(pre, base) {
   var ins = Object.assign({}, base || {});
   ins.name = g('name') || ins.name || ins.isin; ins.kind = g('kind'); ins.cls = g('cls');
   if (isBond(ins)) {
-    var c = parseIt(g('coupon')); ins.coupon = c >= 0 ? c : null; ins.freq = +g('freq') || 2; ins.maturity = g('mat') || null; ins.issueDate = g('issd') || null;
+    var c = parseIt(g('coupon')); ins.coupon = c >= 0 ? c : null; ins.freq = +g('freq') || 2; ins.maturity = g('mat') || null; ins.issueDate = g('issd') || null; ins.firstCoupon = g('fcp') || null;
     var ip = parseIt(g('issp')); ins.issuePrice = ip > 0 ? ip : null; ins.manualCoupons = !!($(pre + 'manc') && $(pre + 'manc').checked);
     if (ins.cls === 'equity') ins.cls = 'bond';
-  } else { ins.coupon = null; ins.freq = null; ins.maturity = null; ins.issueDate = null; ins.issuePrice = null; ins.manualCoupons = false; }
+  } else { ins.coupon = null; ins.freq = null; ins.maturity = null; ins.issueDate = null; ins.issuePrice = null; ins.firstCoupon = null; ins.manualCoupons = false; }
   var gs = parseIt(g('gov')); ins.govShare = ins.kind === 'etf' && gs > 0 ? Math.min(100, gs) : 0;
   ins.inferred = false;
   return ins;
@@ -1835,7 +1868,7 @@ function movementForm(mov) {
       }
       if (t === 'ACQUISTO' || t === 'VENDITA') {
         out.qty = nv('f_qty'); out.price = nv('f_price'); out.fees = nv('f_fees'); out.vdate = $('f_vdate').value || addBusinessDays(out.date, 2);
-        if (!(out.qty > 0) || !(out.price > 0)) return err('Servono quantità e prezzo.');
+        if (!(out.qty > 0) || !(out.price > 0 || (t === 'ACQUISTO' && out.price === 0))) return err('Servono quantità e prezzo.');
         out.rateo = nv('f_rateo'); out.ritRateo = nv('f_rr'); out.ritScarto = nv('f_rs');
         if (t === 'VENDITA') out.tax = nv('f_tax');
       }
@@ -1897,7 +1930,7 @@ function applyImport(imp, replace) {
   Object.keys(imp.instruments).forEach(function (isin) {
     var x = imp.instruments[isin], cur = STATE.instruments[isin];
     if (!cur) cur = STATE.instruments[isin] = guessInstrument(isin, x.name || x.nameHint || isin);
-    ['name', 'kind', 'cls', 'coupon', 'freq', 'maturity', 'issueDate', 'issuePrice', 'govShare'].forEach(function (k) { if (x[k] !== undefined && x[k] !== null) cur[k] = x[k]; });
+    ['name', 'kind', 'cls', 'coupon', 'freq', 'maturity', 'issueDate', 'issuePrice', 'govShare', 'firstCoupon'].forEach(function (k) { if (x[k] !== undefined && x[k] !== null) cur[k] = x[k]; });
     if (x.inferred === false) cur.inferred = false;
     if (!cur.maturity && x.maturityHint) cur.maturity = x.maturityHint;
     if ((cur.name === isin || !cur.name) && x.nameHint) cur.name = x.nameHint;
