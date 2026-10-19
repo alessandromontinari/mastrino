@@ -879,16 +879,43 @@ function makeNumParser(decimalComma) {
     return neg ? -v : v;
   };
 }
-function parseDateIT(raw) {
-  var s = String(raw == null ? '' : raw).trim();
+/* Dates: gg/mm/aaaa, mm/gg/aaaa (order 'mdy'), aaaa-mm-gg, or Excel's serial number (46294 = 29/09/2026).
+   A time after the date (Excel sometimes adds "0:00:00") is ignored. */
+var DATE_RX = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/;
+var EXCEL_DAY0 = Math.round(Date.UTC(1899, 11, 30) / DAYMS);
+function cleanDate(raw) { return String(raw == null ? '' : raw).trim().replace(/[ T]+\d{1,2}[:.]\d{2}(?:[:.]\d{2})?(?:\s*[AaPp]\.?[Mm]\.?)?$/, '').trim(); }
+function parseDateIT(raw, order) {
+  var s = cleanDate(raw);
   if (!s) return null;
   var m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
   if (m) return valid(+m[1], +m[2], +m[3]);
-  m = s.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/);
-  if (m) { var y = +m[3]; if (y < 100) y += y < 70 ? 2000 : 1900; return valid(y, +m[2], +m[1]); }
-  if (/^\d{5}$/.test(s)) { var serial = +s; if (serial > 20000 && serial < 80000) return isoOf(Math.round(Date.UTC(1899, 11, 30) / DAYMS) + serial); }
+  m = s.match(DATE_RX);
+  if (m) { var y = +m[3]; if (y < 100) y += y < 70 ? 2000 : 1900; return order === 'mdy' ? valid(y, +m[1], +m[2]) : valid(y, +m[2], +m[1]); }
+  var k = s.replace(/[\s'’]/g, '').match(/^(\d{1,3}(?:[.,]\d{3})+|\d+)(?:[.,]\d+)?$/);
+  if (k) { var serial = +k[1].replace(/[.,]/g, ''); if (serial > 20000 && serial < 80000) return isoOf(EXCEL_DAY0 + serial); }
   return undefined;
   function valid(y, mo, d) { if (mo < 1 || mo > 12 || d < 1 || d > 31) return undefined; var t = new Date(Date.UTC(y, mo - 1, d)); if (t.getUTCDate() !== d) return undefined; return isoOf(Math.round(t.getTime() / DAYMS)); }
+}
+/* Is the file written gg/mm or mm/gg? A "# date: mm/gg/aaaa" comment decides; otherwise any day above 12 does. */
+function dateHint(text) {
+  var m = String(text || '').match(/^\s*#.*\bdat[ae]\s*[:=]\s*(gg|dd|mm)\s*\/\s*(gg|dd|mm)/im);
+  return m ? (m[1].toLowerCase() === 'mm' ? 'mdy' : 'dmy') : null;
+}
+function detectDateOrder(cells, hint) {
+  if (hint) return { order: hint, how: 'dichiarato' };
+  var dmy = 0, mdy = 0, slash = 0, serial = 0;
+  cells.forEach(function (raw) { var c = cleanDate(raw), m = c.match(DATE_RX); if (!m) { if (/^\d{2}[.,']?\d{3}([.,]\d+)?$/.test(c)) serial++; return; } slash++; if (+m[1] > 12) dmy++; if (+m[2] > 12) mdy++; });
+  if (!slash && serial) return { order: 'dmy', how: 'excel' };
+  if (mdy && !dmy) return { order: 'mdy', how: 'rilevato' };
+  if (dmy && !mdy) return { order: 'dmy', how: 'rilevato' };
+  return { order: 'dmy', how: dmy && mdy ? 'misto' : slash ? 'ambiguo' : 'nessuno' };
+}
+var DATE_FMT = { dmy: 'gg/mm/aaaa', mdy: 'mm/gg/aaaa' };
+function fmtName(det) { return det.how === 'excel' ? 'numeri di Excel' : DATE_FMT[det.order]; }
+function dateWarning(det) {
+  if (det.how === 'misto') return 'Nel file ci sono date scritte in tutti e due i modi (gg/mm e mm/gg): le leggo come gg/mm/aaaa e segnalo le righe che non tornano.';
+  if (det.how === 'ambiguo') return 'In tutte le date giorno e mese sono 12 o meno, quindi non capisco se sono gg/mm o mm/gg: le leggo come gg/mm/aaaa. Se sono mm/gg, aggiungi in cima al file la riga  # date: mm/gg/aaaa';
+  return null;
 }
 function isISIN(s) { return /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(s); }
 
@@ -920,11 +947,16 @@ function parseImport(text) {
   var numericCols = ['quantita', 'prezzo', 'commissioni', 'rateo', 'rit_rateo', 'rit_scarto', 'tasse', 'importo', 'tasso', 'cedola', 'frequenza', 'prezzo_emissione', 'quota_stato'];
   var decimalComma = delim === ';' || (delim === '\t' && body.some(function (r) { return numericCols.some(function (c) { return map[c] !== undefined && /\d,\d/.test(r.cells[map[c]] || ''); }); }));
   var N = makeNumParser(decimalComma);
+  var dateCells = [];
+  body.forEach(function (r) { ['data', 'data_valuta', 'scadenza', 'data_emissione'].forEach(function (c) { if (map[c] !== undefined && r.cells[map[c]]) dateCells.push(r.cells[map[c]]); }); });
+  var det = detectDateOrder(dateCells, dateHint(text));
+  out.dateOrder = det.order; out.dateFmt = fmtName(det); out.dateHow = det.how;
+  if (dateWarning(det)) out.warnings.push({ line: 0, msg: dateWarning(det) });
   var pfSet = {}, seq = 0;
   body.forEach(function (r) {
     function g(col) { return map[col] === undefined ? '' : String(r.cells[map[col]] == null ? '' : r.cells[map[col]]).trim(); }
     function n(col) { var v = N(g(col)); if (v !== null && isNaN(v)) { err('“' + g(col) + '” nella colonna ' + col + ' non è un numero.'); return null; } return v; }
-    function d(col) { var v = parseDateIT(g(col)); if (v === undefined) { err('“' + g(col) + '” nella colonna ' + col + ' non è una data valida (usa gg/mm/aaaa).'); return null; } return v; }
+    function d(col) { var v = parseDateIT(g(col), det.order); if (v === undefined) { err('“' + g(col) + '” nella colonna ' + col + ' non è una data valida (in questo file le leggo come ' + DATE_FMT[det.order] + '; va bene anche la data di Excel come numero).'); return null; } return v; }
     var bad = false;
     function err(msg) { out.errors.push({ line: r.line, msg: msg }); bad = true; }
     var type = synLookup(TYPE_SYN, g('tipo'));
@@ -1017,16 +1049,12 @@ function parsePriceMatrix(text) {
   });
   if (!cols.length) { out.errors.push('Nella prima riga non trovo nessun ISIN.'); return out; }
   /* date format: d/m or m/d? */
-  var dmy = 0, mdy = 0;
-  rows.slice(1).forEach(function (r) { var m = String(r.cells[0] || '').trim().match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/); if (m) { if (+m[1] > 12) dmy++; if (+m[2] > 12) mdy++; } });
-  var us = mdy > 0 && dmy === 0;
-  if (us) out.dateFmt = 'mm/gg/aaaa';
+  var det = detectDateOrder(rows.slice(1).map(function (r) { return r.cells[0]; }), dateHint(text));
+  out.dateFmt = fmtName(det); out.dateHow = det.how; out.dateNote = dateWarning(det);
   var decimalComma = delim === ';' || (delim === '\t' && rows.slice(1, 50).some(function (r) { return r.cells.slice(1).some(function (x) { return /^\s*-?\d+,\d+\s*$/.test(x); }); }));
   var N = makeNumParser(decimalComma);
   rows.slice(1).forEach(function (r) {
-    var raw = String(r.cells[0] || '').trim(), iso;
-    if (us) { var m = raw.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/); iso = m ? parseDateIT(m[2] + '/' + m[1] + '/' + m[3]) : parseDateIT(raw); }
-    else iso = parseDateIT(raw);
+    var raw = String(r.cells[0] || '').trim(), iso = parseDateIT(raw, det.order);
     if (!iso) { if (out.errors.length < 8) out.errors.push('Riga ' + r.line + ': “' + raw + '” non è una data.'); return; }
     cols.forEach(function (cc) {
       var s = String(r.cells[cc.j] == null ? '' : r.cells[cc.j]).trim();
@@ -1042,7 +1070,7 @@ function parsePriceMatrix(text) {
   return out;
 }
 
-var EXAMPLE_CSV = "﻿# Mastrino - file di esempio per l'importazione dello storico\n# Le righe che iniziano con # vengono ignorate. Le righe possono stare in qualsiasi ordine: l'app le mette in ordine di data da sola.\n# Numeri con la virgola decimale (95,63) e date gg/mm/aaaa. Lascia vuote le colonne che non servono.\n# TIPI: VERSAMENTO / PRELIEVO / ACQUISTO / VENDITA / CEDOLA / DIVIDENDO / RIMBORSO / DEPOSITO / CHIUSURA_DEPOSITO / SPESA / TITOLO\n# VERSAMENTO e PRELIEVO: importo. SPESA (es. bollo): importo e descrizione.\n# ACQUISTO e VENDITA: isin - quantita (pezzi oppure valore nominale per i bond) - prezzo (per i bond: per 100) - commissioni. Per i bond puoi copiare rateo - rit_rateo - rit_scarto dalla nota Directa (se li lasci vuoti li calcolo io). In una VENDITA puoi scrivere in tasse quanto ha trattenuto Directa: lo confronto col mio calcolo.\n# CEDOLA: facoltativa. Se non la scrivi la calcolo io dalle date di pagamento. Se la scrivi uso importo (lordo) e tasse della riga.\n# DIVIDENDO: isin - importo lordo - tasse (se vuote applico il 26%).\n# RIMBORSO: facoltativo. Alla scadenza di un bond lo registro da solo.\n# DEPOSITO: descrizione (nome del deposito) - importo - tasso (lordo annuo in %) - scadenza (vuota = conto libero) - interessi: anticipati / scadenza / mensili / trimestrali / semestrali / annuali.\n# CHIUSURA_DEPOSITO: chiusura anticipata. descrizione uguale a quella del deposito - commissioni = eventuale penale.\n# TITOLO: scheda del titolo (facoltativa ma consigliata). strumento: ETF / ETC / STATO / OBBLIGAZIONE / AZIONE. classe: azionario / bond / bond lungo / bond breve / metalli / materie prime / altro.\n#   Per i bond: cedola (% annua) - frequenza (pagamenti all'anno) - scadenza - data_emissione e prezzo_emissione (servono per lo scarto di emissione). quota_stato: % di titoli di Stato dentro un ETF obbligazionario.\n# Gli esempi qui sotto mescolano le due operazioni vere delle tue note Directa del 29/09/2026 con dati di fantasia: sostituiscili con i tuoi.\nportafoglio;data;data_valuta;tipo;isin;descrizione;quantita;prezzo;commissioni;rateo;rit_rateo;rit_scarto;tasse;importo;tasso;scadenza;interessi;strumento;classe;cedola;frequenza;data_emissione;prezzo_emissione;quota_stato;note\n;;;TITOLO;IE00B4L5Y983;iShares Core MSCI World (SWDA);;;;;;;;;;;;ETF;azionario;;;;;;\n;;;TITOLO;IE00B579F325;Invesco Physical Gold ETC (SGLD);;;;;;;;;;;;ETC;metalli;;;;;;\n;;;TITOLO;IT0005433690;BTP TF 0,25% MZ28;;;;;;;;;;15/03/2028;;STATO;bond;0,25;2;15/03/2021;99,618;;Prezzo di emissione ricavato dallo scarto della tua nota Directa: verificalo\n;;;TITOLO;IE00B3RBWM25;Vanguard FTSE All-World a distribuzione (VWRL);;;;;;;;;;;;ETF;azionario;;;;;;\nAlessandro;29/09/2026;01/10/2026;ACQUISTO;IE00B4L5Y983;ISHARES CORE MSCI WORLD UCITS;178;129,05;0;;;;;;;;;;;;;;;;Dalla nota Directa 27212153552380\nAlessandro;29/09/2026;01/10/2026;ACQUISTO;IT0005433690;BTP TF 0,25% MZ28;104000;95,63;5;11,49;-1,44;-39,36;;;;15/03/2028;;;;;;;;;Dalla nota Directa 27212094051799: totale a debito 99.430,89\nAlessandro;10/01/2025;;VERSAMENTO;;Bonifico iniziale;;;;;;;;150000;;;;;;;;;;;\nAlessandro;15/01/2025;17/01/2025;ACQUISTO;IE00B579F325;INVESCO PHYSICAL GOLD ETC;60;230,50;5;;;;;;;;;;;;;;;;\nAlessandro;03/02/2025;05/02/2025;ACQUISTO;IE00B4L5Y983;ISHARES CORE MSCI WORLD UCITS;100;105,20;0;;;;;;;;;;;;;;;;\nAlessandro;07/04/2025;09/04/2025;VENDITA;IE00B4L5Y983;ISHARES CORE MSCI WORLD UCITS;50;96,80;0;;;;;;;;;;;;;;;;Perdita su ETF: va nello zainetto fiscale\nAlessandro;20/05/2026;22/05/2026;VENDITA;IE00B579F325;INVESCO PHYSICAL GOLD ETC;20;300,10;5;;;;;;;;;;;;;;;;Guadagno su ETC: assorbe la minusvalenza dell ETF\nAlessandro;02/03/2025;;DEPOSITO;;Conto deposito Banca Alfa 12 mesi;;;;;;;;30000;3,00;02/03/2026;scadenza;;;;;;;;\nAlessandro;31/12/2025;;SPESA;;Imposta di bollo 2025;;;;;;;;48,20;;;;;;;;;;;\nAlessandro;10/07/2026;;PRELIEVO;;Prelievo;;;;;;;;5000;;;;;;;;;;;\nMoglie;05/02/2025;;VERSAMENTO;;Bonifico iniziale;;;;;;;;100000;;;;;;;;;;;\nMoglie;07/02/2025;11/02/2025;ACQUISTO;IE00B3RBWM25;VANGUARD FTSE ALL-WORLD DIST;300;120,40;5;;;;;;;;;;;;;;;;\nMoglie;26/03/2025;;DIVIDENDO;IE00B3RBWM25;Dividendo VWRL;;;;;;;11,78;45,30;;;;;;;;;;;\nMoglie;01/04/2025;;DEPOSITO;;Conto deposito Banca Beta 24 mesi;;;;;;;;20000;3,20;01/04/2027;anticipati;;;;;;;;\nMoglie;10/06/2025;;DEPOSITO;;Conto libero Banca Gamma;;;;;;;;10000;2,50;;trimestrali;;;;;;;;\nMoglie;10/06/2026;;CHIUSURA_DEPOSITO;;Conto libero Banca Gamma;;;;;;;;;;;;;;;;;;;\nMoglie;15/12/2025;;VERSAMENTO;;Versamento mensile;;;;;;;;1000;;;;;;;;;;;\nMoglie;15/10/2025;;VERSAMENTO;;Versamento mensile;;;;;;;;1000;;;;;;;;;;;\nMoglie;15/11/2025;;VERSAMENTO;;Versamento mensile;;;;;;;;1000;;;;;;;;;;;\nMoglie;20/01/2026;22/01/2026;ACQUISTO;IE00B579F325;INVESCO PHYSICAL GOLD ETC;10;265,40;5;;;;;;;;;;;;;;;;\nMoglie;10/02/2026;12/02/2026;ACQUISTO;IT0005433690;BTP TF 0,25% MZ28;20000;95,20;5;;;;;;;;;;;;;;;;Rateo e ritenute lasciati vuoti: li calcola l app\nMoglie;16/03/2026;;CEDOLA;IT0005433690;Cedola BTP Mz28;;;;;;;3,13;25,00;;;;;;;;;;;Cedola scritta a mano. Quella di settembre la calcola l app\n";
+var EXAMPLE_CSV = "﻿# Mastrino - file di esempio per l'importazione dello storico\n# Le righe che iniziano con # vengono ignorate. Le righe possono stare in qualsiasi ordine: l'app le mette in ordine di data da sola.\n# Numeri con la virgola decimale (95,63). Date gg/mm/aaaa, mm/gg/aaaa (lo capisco da solo) o il numero di data di Excel (46294 = 29/09/2026). Lascia vuote le colonne che non servono.\n# TIPI: VERSAMENTO / PRELIEVO / ACQUISTO / VENDITA / CEDOLA / DIVIDENDO / RIMBORSO / DEPOSITO / CHIUSURA_DEPOSITO / SPESA / TITOLO\n# VERSAMENTO e PRELIEVO: importo. SPESA (es. bollo): importo e descrizione.\n# ACQUISTO e VENDITA: isin - quantita (pezzi oppure valore nominale per i bond) - prezzo (per i bond: per 100) - commissioni. Per i bond puoi copiare rateo - rit_rateo - rit_scarto dalla nota Directa (se li lasci vuoti li calcolo io). In una VENDITA puoi scrivere in tasse quanto ha trattenuto Directa: lo confronto col mio calcolo.\n# CEDOLA: facoltativa. Se non la scrivi la calcolo io dalle date di pagamento. Se la scrivi uso importo (lordo) e tasse della riga.\n# DIVIDENDO: isin - importo lordo - tasse (se vuote applico il 26%).\n# RIMBORSO: facoltativo. Alla scadenza di un bond lo registro da solo.\n# DEPOSITO: descrizione (nome del deposito) - importo - tasso (lordo annuo in %) - scadenza (vuota = conto libero) - interessi: anticipati / scadenza / mensili / trimestrali / semestrali / annuali.\n# CHIUSURA_DEPOSITO: chiusura anticipata. descrizione uguale a quella del deposito - commissioni = eventuale penale.\n# TITOLO: scheda del titolo (facoltativa ma consigliata). strumento: ETF / ETC / STATO / OBBLIGAZIONE / AZIONE. classe: azionario / bond / bond lungo / bond breve / metalli / materie prime / altro.\n#   Per i bond: cedola (% annua) - frequenza (pagamenti all'anno) - scadenza - data_emissione e prezzo_emissione (servono per lo scarto di emissione). quota_stato: % di titoli di Stato dentro un ETF obbligazionario.\n# Gli esempi qui sotto mescolano le due operazioni vere delle tue note Directa del 29/09/2026 con dati di fantasia: sostituiscili con i tuoi.\nportafoglio;data;data_valuta;tipo;isin;descrizione;quantita;prezzo;commissioni;rateo;rit_rateo;rit_scarto;tasse;importo;tasso;scadenza;interessi;strumento;classe;cedola;frequenza;data_emissione;prezzo_emissione;quota_stato;note\n;;;TITOLO;IE00B4L5Y983;iShares Core MSCI World (SWDA);;;;;;;;;;;;ETF;azionario;;;;;;\n;;;TITOLO;IE00B579F325;Invesco Physical Gold ETC (SGLD);;;;;;;;;;;;ETC;metalli;;;;;;\n;;;TITOLO;IT0005433690;BTP TF 0,25% MZ28;;;;;;;;;;15/03/2028;;STATO;bond;0,25;2;15/03/2021;99,618;;Prezzo di emissione ricavato dallo scarto della tua nota Directa: verificalo\n;;;TITOLO;IE00B3RBWM25;Vanguard FTSE All-World a distribuzione (VWRL);;;;;;;;;;;;ETF;azionario;;;;;;\nAlessandro;29/09/2026;01/10/2026;ACQUISTO;IE00B4L5Y983;ISHARES CORE MSCI WORLD UCITS;178;129,05;0;;;;;;;;;;;;;;;;Dalla nota Directa 27212153552380\nAlessandro;29/09/2026;01/10/2026;ACQUISTO;IT0005433690;BTP TF 0,25% MZ28;104000;95,63;5;11,49;-1,44;-39,36;;;;15/03/2028;;;;;;;;;Dalla nota Directa 27212094051799: totale a debito 99.430,89\nAlessandro;10/01/2025;;VERSAMENTO;;Bonifico iniziale;;;;;;;;150000;;;;;;;;;;;\nAlessandro;15/01/2025;17/01/2025;ACQUISTO;IE00B579F325;INVESCO PHYSICAL GOLD ETC;60;230,50;5;;;;;;;;;;;;;;;;\nAlessandro;03/02/2025;05/02/2025;ACQUISTO;IE00B4L5Y983;ISHARES CORE MSCI WORLD UCITS;100;105,20;0;;;;;;;;;;;;;;;;\nAlessandro;07/04/2025;09/04/2025;VENDITA;IE00B4L5Y983;ISHARES CORE MSCI WORLD UCITS;50;96,80;0;;;;;;;;;;;;;;;;Perdita su ETF: va nello zainetto fiscale\nAlessandro;20/05/2026;22/05/2026;VENDITA;IE00B579F325;INVESCO PHYSICAL GOLD ETC;20;300,10;5;;;;;;;;;;;;;;;;Guadagno su ETC: assorbe la minusvalenza dell ETF\nAlessandro;02/03/2025;;DEPOSITO;;Conto deposito Banca Alfa 12 mesi;;;;;;;;30000;3,00;02/03/2026;scadenza;;;;;;;;\nAlessandro;31/12/2025;;SPESA;;Imposta di bollo 2025;;;;;;;;48,20;;;;;;;;;;;\nAlessandro;10/07/2026;;PRELIEVO;;Prelievo;;;;;;;;5000;;;;;;;;;;;\nMoglie;05/02/2025;;VERSAMENTO;;Bonifico iniziale;;;;;;;;100000;;;;;;;;;;;\nMoglie;07/02/2025;11/02/2025;ACQUISTO;IE00B3RBWM25;VANGUARD FTSE ALL-WORLD DIST;300;120,40;5;;;;;;;;;;;;;;;;\nMoglie;26/03/2025;;DIVIDENDO;IE00B3RBWM25;Dividendo VWRL;;;;;;;11,78;45,30;;;;;;;;;;;\nMoglie;01/04/2025;;DEPOSITO;;Conto deposito Banca Beta 24 mesi;;;;;;;;20000;3,20;01/04/2027;anticipati;;;;;;;;\nMoglie;10/06/2025;;DEPOSITO;;Conto libero Banca Gamma;;;;;;;;10000;2,50;;trimestrali;;;;;;;;\nMoglie;10/06/2026;;CHIUSURA_DEPOSITO;;Conto libero Banca Gamma;;;;;;;;;;;;;;;;;;;\nMoglie;15/12/2025;;VERSAMENTO;;Versamento mensile;;;;;;;;1000;;;;;;;;;;;\nMoglie;15/10/2025;;VERSAMENTO;;Versamento mensile;;;;;;;;1000;;;;;;;;;;;\nMoglie;15/11/2025;;VERSAMENTO;;Versamento mensile;;;;;;;;1000;;;;;;;;;;;\nMoglie;20/01/2026;22/01/2026;ACQUISTO;IE00B579F325;INVESCO PHYSICAL GOLD ETC;10;265,40;5;;;;;;;;;;;;;;;;\nMoglie;10/02/2026;12/02/2026;ACQUISTO;IT0005433690;BTP TF 0,25% MZ28;20000;95,20;5;;;;;;;;;;;;;;;;Rateo e ritenute lasciati vuoti: li calcola l app\nMoglie;16/03/2026;;CEDOLA;IT0005433690;Cedola BTP Mz28;;;;;;;3,13;25,00;;;;;;;;;;;Cedola scritta a mano. Quella di settembre la calcola l app\n";
 /* ================= guide ("Come funziona") ================= */
 function bondExample() {
   var m = STATE.movements.filter(function (x) { var ins = STATE.instruments[x.isin]; return x.type === 'ACQUISTO' && isBond(ins) && ins.coupon && ins.maturity; })[0];
@@ -1142,7 +1170,7 @@ var GUIDE = [
   { g: 'Dati e prezzi', id: 'storico', t: 'Prezzi storici (per esempio da Bloomberg)', b: function () {
     return '<p>Con i prezzi giornalieri il grafico, la volatilità, lo Sharpe e la perdita massima diventano precisi. Il file ha le date nella prima colonna e un titolo per colonna, con l’ISIN nella prima riga:</p>' +
       '<div class="f">Data;IT0005433690 Corp;IE00B4L5Y983 Equity\n16/10/2026;95,98;131,20\n15/10/2026;95,94;#N/A N/A</div>' +
-      '<p>Celle vuote, NaN e #N/A vengono saltate. Vanno bene virgola o punto e virgola, date gg/mm/aaaa (riconosco anche mm/gg/aaaa se è evidente). Per i bond usa il prezzo secco per 100. Puoi reimportare quando vuoi: i prezzi delle stesse date vengono sostituiti.</p>';
+      '<p>Celle vuote, NaN e #N/A vengono saltate. Vanno bene virgola o punto e virgola, date gg/mm/aaaa, mm/gg/aaaa (lo capisco da solo) o il numero di data di Excel. Per i bond usa il prezzo secco per 100. Puoi reimportare quando vuoi: i prezzi delle stesse date vengono sostituiti.</p>';
   } },
   { g: 'Dati e prezzi', id: 'ponte', t: 'Prezzi automatici: il ponte Cloudflare', b: function () {
     return '<p>Il ponte è un piccolo programma gratuito che gira su Cloudflare: legge l’ultimo prezzo dalle pagine pubbliche di Borsa Italiana (con 15 minuti di ritardo) cercando per ISIN, e lo passa all’app. Serve perché un’app nel browser non può leggere direttamente le pagine di un altro sito.</p>' +
@@ -1150,7 +1178,7 @@ var GUIDE = [
       '<p>Se un titolo non viene trovato puoi inserirne il prezzo a mano. Se un giorno smette di funzionare, probabilmente Borsa Italiana ha cambiato le sue pagine: apri nel browser l’indirizzo del ponte con <span class="mono">?isin=IT0005433690&amp;debug=1</span> in fondo e mandami cosa vedi.</p>';
   } },
   { g: 'Dati e prezzi', id: 'csv', t: 'Formato del file CSV dello storico', b: function () {
-    return '<p>Una riga per movimento, in qualsiasi ordine: l’app le ordina per data. Separatore punto e virgola (o virgola), numeri con la virgola decimale, date gg/mm/aaaa. Le colonne che non servono a un tipo restano vuote.</p>' +
+    return '<p>Una riga per movimento, in qualsiasi ordine: l’app le ordina per data. Separatore punto e virgola (o virgola), numeri con la virgola decimale. Date gg/mm/aaaa oppure mm/gg/aaaa (lo capisco da solo: basta un giorno sopra il 12) oppure il numero con cui Excel salva le date, per esempio 46294 per il 29/09/2026. Le colonne che non servono a un tipo restano vuote.</p>' +
       '<div class="f">portafoglio;data;data_valuta;tipo;isin;descrizione;quantita;prezzo;commissioni;rateo;rit_rateo;rit_scarto;tasse;importo;tasso;scadenza;interessi;strumento;classe;cedola;frequenza;data_emissione;prezzo_emissione;quota_stato;note</div>' +
       '<p><b>VERSAMENTO</b>, <b>PRELIEVO</b>, <b>SPESA</b>: importo. <b>ACQUISTO</b> e <b>VENDITA</b>: isin, quantità (o nominale), prezzo (per 100 per i bond), commissioni; per i bond rateo e ritenute dalla nota Directa (facoltativi); in vendita “tasse” = quanto ha trattenuto Directa. <b>CEDOLA</b> e <b>RIMBORSO</b>: facoltativi, li calcola l’app. <b>DIVIDENDO</b>: importo lordo e tasse. <b>DEPOSITO</b>: descrizione, importo, tasso, scadenza (vuota = libero), interessi (anticipati, scadenza, mensili, trimestrali, semestrali, annuali). <b>CHIUSURA_DEPOSITO</b>: stessa descrizione del deposito, commissioni = penale. <b>TITOLO</b>: la scheda del titolo (strumento, classe, cedola, frequenza, scadenza, emissione, quota Stato).</p>' +
       '<p><button type="button" class="link" id="gCsv">Scarica il file di esempio</button> con una riga per ogni tipo.</p>';
@@ -1829,7 +1857,7 @@ function depNames() { var s = {}; STATE.movements.forEach(function (m) { if (m.t
 
 /* ---------- CSV import ---------- */
 function openImport() {
-  openSheet('Importa lo storico da CSV', '<p class="note" style="margin-top:0">Righe in qualsiasi ordine, separatore ; oppure , e numeri con la virgola. <button type="button" class="link" id="impEx">Scarica il file di esempio</button> per vedere tutte le colonne.</p>' +
+  openSheet('Importa lo storico da CSV', '<p class="note" style="margin-top:0">Righe in qualsiasi ordine, separatore ; oppure , e numeri con la virgola. Date gg/mm/aaaa, mm/gg/aaaa o come numero di Excel. <button type="button" class="link" id="impEx">Scarica il file di esempio</button> per vedere tutte le colonne.</p>' +
     '<div class="toolbar"><input type="file" id="impFile" accept=".csv,.txt,text/csv,text/plain" class="inp" style="max-width:340px"></div><details><summary class="note" style="cursor:pointer">Oppure incolla il testo</summary><textarea class="inp" id="impText" spellcheck="false" style="margin-top:8px"></textarea><button type="button" class="btn sm" id="impParse" style="margin-top:6px">Leggi il testo</button></details><div id="impOut"></div>',
     '<span></span><span class="bk-row"><button type="button" class="btn" id="impCancel">Annulla</button><button type="button" class="btn primary" id="impGo" disabled>Importa</button></span>', function () {
       var parsed = null;
@@ -1841,10 +1869,11 @@ function openImport() {
         var newPf = parsed.portfolios.filter(function (n) { return known.indexOf(n.toLowerCase()) < 0; });
         var nIns = Object.keys(parsed.instruments).filter(function (k) { return !STATE.instruments[k]; }).length;
         var h = '<div class="formbox"><h4>Cosa ho trovato</h4>' + Object.keys(c).map(function (k) { return '<div class="sumrow"><span>' + (k === 'TITOLO' ? 'Schede titolo' : TYPE_LABEL[k] || k) + '</span><span>' + c[k] + '</span></div>'; }).join('') +
-          '<div class="sumrow"><span>Movimenti da importare</span><span>' + parsed.movements.length + '</span></div></div>';
+          '<div class="sumrow"><span>Movimenti da importare</span><span>' + parsed.movements.length + '</span></div>' +
+          (parsed.dateFmt && parsed.dateHow !== 'nessuno' ? '<div class="sumrow"><span>Date lette come</span><span>' + parsed.dateFmt + (parsed.dateOrder === 'mdy' ? ' (all’americana)' : '') + '</span></div>' : '') + '</div>';
         if (parsed.portfolios.length) h += '<p class="note">Portafogli: ' + parsed.portfolios.map(esc).join(', ') + (newPf.length ? ' (nuovi: ' + newPf.map(esc).join(', ') + ')' : '') + '. Titoli nuovi: ' + nIns + '.</p>';
         if (parsed.errors.length) h += '<div class="formbox"><h4 class="err">' + parsed.errors.length + (parsed.errors.length === 1 ? ' riga con errori: verrà saltata' : ' righe con errori: verranno saltate') + '</h4>' + parsed.errors.slice(0, 30).map(function (e) { return '<div class="err">Riga ' + e.line + ': ' + esc(e.msg) + '</div>'; }).join('') + (parsed.errors.length > 30 ? '<div class="note">…e altre ' + (parsed.errors.length - 30) + '</div>' : '') + '</div>';
-        if (parsed.warnings.length) h += parsed.warnings.slice(0, 10).map(function (w) { return '<p class="note">Riga ' + w.line + ': ' + esc(w.msg) + '</p>'; }).join('');
+        if (parsed.warnings.length) h += parsed.warnings.slice(0, 10).map(function (w) { return '<p class="note">' + (w.line ? 'Riga ' + w.line + ': ' : '') + esc(w.msg) + '</p>'; }).join('');
         if (STATE.movements.length && parsed.movements.length) h += '<div class="formbox"><label class="check" for="impReplace"><input type="checkbox" id="impReplace"> Sostituisci tutti i movimenti attuali (' + STATE.movements.length + ') con quelli del file</label><p class="note">Se non la spunti, aggiungo i movimenti e salto quelli identici a uno già presente.</p></div>';
         $('impOut').innerHTML = h;
         $('impGo').disabled = !parsed.movements.length && !Object.keys(parsed.instruments).length;
@@ -1896,9 +1925,10 @@ function openPriceImport() {
         var rd = new FileReader(); rd.onload = function () {
           parsed = parsePriceMatrix(rd.result);
           var isins = Object.keys(parsed.series), known = isins.filter(function (k) { return STATE.instruments[k]; }), unk = isins.filter(function (k) { return !STATE.instruments[k]; });
-          var h = '<div class="formbox"><h4>' + parsed.points + ' prezzi dal ' + (parsed.from ? fmtDateIT(parsed.from) : '–') + ' al ' + (parsed.to ? fmtDateIT(parsed.to) : '–') + ' <span class="muted">(date lette come ' + parsed.dateFmt + ')</span></h4>' +
+          var h = '<div class="formbox"><h4>' + parsed.points + ' prezzi dal ' + (parsed.from ? fmtDateIT(parsed.from) : '–') + ' al ' + (parsed.to ? fmtDateIT(parsed.to) : '–') + (parsed.dateHow !== 'nessuno' ? ' <span class="muted">(date lette come ' + parsed.dateFmt + ')</span>' : '') + '</h4>' +
             known.map(function (k) { return '<div class="sumrow"><span>' + esc(STATE.instruments[k].name) + ' <span class="mono muted">' + k + '</span></span><span>' + parsed.series[k].length + ' prezzi</span></div>'; }).join('') + '</div>';
           if (unk.length) h += '<p class="note">Non sono nei tuoi movimenti e li salto: ' + unk.map(function (k) { return '<span class="mono">' + k + '</span>'; }).join(', ') + '.</p>';
+          if (parsed.dateNote) h += '<p class="note">' + esc(parsed.dateNote) + '</p>';
           if (parsed.unknown.length) h += '<p class="note">Colonne senza ISIN, ignorate: ' + parsed.unknown.map(esc).join(', ') + '.</p>';
           parsed.errors.forEach(function (e) { h += '<p class="err">' + esc(e) + '</p>'; });
           $('phOut').innerHTML = h; $('phGo').disabled = !known.length; parsed.known = known;
