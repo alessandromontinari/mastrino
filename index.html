@@ -85,6 +85,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .pricebtn { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 7px 11px; cursor: pointer; font-size: .8rem; color: var(--ink-2); }
 .pricebtn .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .pricebtn.ok .dot { background: var(--up); } .pricebtn.err .dot { background: var(--down); } .pricebtn.busy .dot { background: var(--warn); }
+.privbtn svg { flex: none; }
+.privbtn[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.hero-v.masked { color: var(--muted); letter-spacing: .08em; }
+@media (max-width: 560px) { .privbtn span { display: none; } .privbtn { padding: 7px 9px; } }
 
 /* nav */
 .nav { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20; background: var(--bg); border-bottom: 1px solid var(--line); display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; margin-bottom: 16px; }
@@ -227,6 +231,7 @@ textarea.inp { min-height: 110px; font-family: var(--f-mono); font-size: .78rem;
     <div class="brand"><h1>Mastr<i>ino</i></h1><span>Il patrimonio di famiglia, movimento per movimento</span></div>
     <div class="top-r">
       <div class="seg" id="scope" role="group" aria-label="Portafoglio"></div>
+      <button type="button" class="pricebtn privbtn" id="privBtn" aria-pressed="false" title="Nascondi gli importi"><svg class="eye-on" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg><svg class="eye-off" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" style="display:none"><path d="M3.5 8.5C5.3 6.8 8.2 5.5 12 5.5c6.4 0 10 6.5 10 6.5a17 17 0 0 1-3 3.6M14.5 18.1c-.8.2-1.6.4-2.5.4-6.4 0-10-6.5-10-6.5a16.6 16.6 0 0 1 2.4-3.1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M4 4l16 16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span id="privTxt">Nascondi importi</span></button>
       <button type="button" class="pricebtn" id="priceBtn"><i class="dot"></i><span id="priceTxt">Prezzi</span></button>
     </div>
   </header>
@@ -1127,7 +1132,7 @@ var GUIDE = [
       '<p>Esempio dalla tua nota Directa: 104.000 di nominale del BTP 0,25% Mz28 a 95,63 fanno 104.000 × 95,63 / 100 = <b>99.455,20 €</b> di controvalore, più 11,49 € di rateo.</p>';
   } },
   { g: 'Obbligazioni', id: 'rateo', t: 'Rateo', b: function () {
-    var ex = bondExample(), e = ex ? '<p>Esempio dai tuoi dati: ' + esc(ex.ins.name) + ', ' + qf(ex.m.qty) + ' di nominale, data valuta ' + fmtDay(ex.vd) + '. L’ultima cedola è del ' + fmtDay(ex.p.start) + ', la prossima del ' + fmtDay(ex.p.next) + ': sono ' + ex.days + ' giorni su ' + ex.per + '.</p><div class="f">' + qf(ex.m.qty) + ' × ' + nf(ex.ins.coupon, 3).replace(/0+$/, '').replace(/,$/, '') + '% / ' + ex.ins.freq + ' × ' + ex.days + ' / ' + ex.per + ' = ' + nf(ex.rateo, 2) + ' €\nritenuta sul rateo = ' + nf(ex.rateo, 2) + ' × ' + (incomeRate(ex.ins) * 100).toString().replace('.', ',') + '% = ' + nf(ex.rr, 2) + ' €</div>' : '<div class="f">104.000 × 0,25% / 2 × 16 / 181 = 11,49 €  (BTP 0,25% Mz28, valuta 01/10/2026)</div>';
+    var ex = PRIV() ? null : bondExample(), e = ex ? '<p>Esempio dai tuoi dati: ' + esc(ex.ins.name) + ', ' + qf(ex.m.qty) + ' di nominale, data valuta ' + fmtDay(ex.vd) + '. L’ultima cedola è del ' + fmtDay(ex.p.start) + ', la prossima del ' + fmtDay(ex.p.next) + ': sono ' + ex.days + ' giorni su ' + ex.per + '.</p><div class="f">' + qf(ex.m.qty) + ' × ' + nf(ex.ins.coupon, 3).replace(/0+$/, '').replace(/,$/, '') + '% / ' + ex.ins.freq + ' × ' + ex.days + ' / ' + ex.per + ' = ' + nf(ex.rateo, 2) + ' €\nritenuta sul rateo = ' + nf(ex.rateo, 2) + ' × ' + (incomeRate(ex.ins) * 100).toString().replace('.', ',') + '% = ' + nf(ex.rr, 2) + ' €</div>' : '<div class="f">10.000 × 0,25% / 2 × 16 / 181 = 1,10 €  (BTP 0,25% Mz28, valuta 01/10/2026)</div>';
     return '<p>La cedola viene pagata per intero a chi possiede il titolo il giorno del pagamento. Per questo chi compra a metà periodo paga al venditore gli interessi maturati fino alla data valuta: il rateo.</p>' +
       '<div class="f">rateo = nominale × cedola annua / pagamenti all’anno × giorni dall’ultima cedola / giorni del periodo</div>' + e +
       '<p><b>Le tasse.</b> Directa ti restituisce subito la ritenuta sul rateo che hai pagato (12,5% per i titoli di Stato), perché alla cedola successiva ti tratterrà le tasse sull’intera cedola. Alla fine paghi le tasse solo sugli interessi maturati mentre il titolo era tuo. Quando vendi succede il contrario: incassi il rateo e ti viene trattenuta la ritenuta.</p>';
@@ -1310,9 +1315,12 @@ function setupBackup(cfg) {
 /* ================= formatting ================= */
 var EURF = new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' });
 var EUR0 = new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 });
-function eur(v, noDec) { return v == null || !isFinite(v) ? '–' : (noDec ? EUR0 : EURF).format(Math.abs(v) < 0.005 ? 0 : v); }
+/* private mode (to show the app to someone): every money amount and quantity becomes •••• */
+var MASK = '••••';
+function PRIV() { return !!UI.priv; }
+function eur(v, noDec) { return v == null || !isFinite(v) ? '–' : PRIV() ? MASK : (noDec ? EUR0 : EURF).format(Math.abs(v) < 0.005 ? 0 : v); }
 function nf(v, dec) { return v == null || !isFinite(v) ? '–' : v.toLocaleString('it-IT', { minimumFractionDigits: dec || 0, maximumFractionDigits: dec || 0 }); }
-function qf(v) { return v == null || !isFinite(v) ? '–' : v.toLocaleString('it-IT', { maximumFractionDigits: 4 }); }
+function qf(v) { return v == null || !isFinite(v) ? '–' : PRIV() ? MASK : v.toLocaleString('it-IT', { maximumFractionDigits: 4 }); }
 function pct(v, dec, signed) {
   if (v == null || !isFinite(v)) return '–';
   var s = Math.abs(v * 100).toFixed(dec == null ? 1 : dec).replace('.', ',');
@@ -1320,7 +1328,7 @@ function pct(v, dec, signed) {
 }
 function sgnCls(v) { return v > 0.004 ? 'up' : v < -0.004 ? 'down' : ''; }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
-function shortEur(v) { var a = Math.abs(v); return (v < 0 ? '−' : '') + (a >= 1e6 ? nf(a / 1e6, 1) + ' M' : a >= 1e3 ? nf(a / 1e3, a >= 1e5 ? 0 : 1) + 'k' : nf(a, 0)); }
+function shortEur(v) { if (PRIV()) return MASK; var a = Math.abs(v); return (v < 0 ? '−' : '') + (a >= 1e6 ? nf(a / 1e6, 1) + ' M' : a >= 1e3 ? nf(a / 1e3, a >= 1e5 ? 0 : 1) + 'k' : nf(a, 0)); }
 var MONTHS = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic'];
 function parseIt(s) { s = String(s == null ? '' : s).trim(); if (!s) return null; var v = makeNumParser(/,/.test(s) || /^\d{1,3}(\.\d{3})+$/.test(s))(s); return v === null || isNaN(v) ? NaN : v; }
 function sum(a) { var s = 0; for (var i = 0; i < a.length; i++) s += a[i]; return s; }
@@ -1333,9 +1341,10 @@ var LS_KEY = 'mastrino.v1', UI_KEY = 'mastrino.ui';
 var IN_CLAUDE = !!(window.claude && typeof window.claude.use === 'function');
 function blankState() { return { v: 1, portfolios: [], instruments: {}, movements: [], settings: { shortYears: 3, rf: 2.5, band: 5, proxy: '', autoPrices: true }, targets: {}, meta: { lastPrices: null, priceStatus: null, demo: false } }; }
 var STATE = blankState(), RES = null, IDXC = {}, storageOK = true;
-var UI = { tab: 'panoramica', scope: '*', range: 'all', open: null, fiscPf: null, fiscYear: null, movType: 'tutti', movYear: 'tutti', movQ: '', movAuto: true, movLimit: 150, extra: 0 };
-try { var savedUI = JSON.parse(localStorage.getItem(UI_KEY) || 'null'); if (savedUI && typeof savedUI === 'object') ['tab', 'scope', 'range'].forEach(function (k) { if (typeof savedUI[k] === 'string') UI[k] = savedUI[k]; }); } catch (e) {}
-function saveUI() { try { localStorage.setItem(UI_KEY, JSON.stringify({ tab: UI.tab, scope: UI.scope, range: UI.range })); } catch (e) {} }
+var UI = { priv: false, tab: 'panoramica', scope: '*', range: 'all', open: null, fiscPf: null, fiscYear: null, movType: 'tutti', movYear: 'tutti', movQ: '', movAuto: true, movLimit: 150, extra: 0 };
+try { var savedUI = JSON.parse(localStorage.getItem(UI_KEY) || 'null'); if (savedUI && typeof savedUI === 'object') { ['tab', 'scope', 'range'].forEach(function (k) { if (typeof savedUI[k] === 'string') UI[k] = savedUI[k]; }); UI.priv = savedUI.priv === true; } } catch (e) {}
+function saveUI() { try { localStorage.setItem(UI_KEY, JSON.stringify({ tab: UI.tab, scope: UI.scope, range: UI.range, priv: UI.priv })); } catch (e) {} }
+function setPriv(on) { UI.priv = !!on; saveUI(); render(); toast(on ? 'Importi nascosti: restano solo le percentuali.' : 'Importi di nuovo visibili.'); }
 function load() {
   try {
     var raw = localStorage.getItem(LS_KEY);
@@ -1411,12 +1420,14 @@ function renderHeader() {
   $('nav').innerHTML = TABS.map(function (t) { return '<button type="button" role="tab" data-tab="' + t[0] + '" aria-selected="' + (UI.tab === t[0]) + '">' + t[1] + '</button>'; }).join('');
   var st = STATE.meta.priceStatus, b = $('priceBtn');
   b.className = 'pricebtn' + (st && st.busy ? ' busy' : st && st.err ? ' err' : STATE.meta.lastPrices ? ' ok' : '');
+  var pb = $('privBtn'); if (pb) { pb.setAttribute('aria-pressed', String(PRIV())); pb.title = PRIV() ? 'Mostra gli importi' : 'Nascondi gli importi'; $('privTxt').textContent = PRIV() ? 'Importi nascosti' : 'Nascondi importi'; pb.querySelector('.eye-off').style.display = PRIV() ? '' : 'none'; pb.querySelector('.eye-on').style.display = PRIV() ? 'none' : ''; }
   $('priceTxt').textContent = st && st.busy ? 'Aggiorno i prezzi…' : STATE.meta.lastPrices ? 'Prezzi del ' + fmtStamp(STATE.meta.lastPrices) : 'Aggiorna prezzi';
 }
 function fmtStamp(ms) { var d = new Date(ms); return pad2(d.getDate()) + '/' + pad2(d.getMonth() + 1) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()); }
 $('scope').addEventListener('click', function (e) { var b = e.target.closest('[data-scope]'); if (!b) return; UI.scope = b.getAttribute('data-scope'); UI.open = null; saveUI(); render(); });
 $('nav').addEventListener('click', function (e) { var b = e.target.closest('[data-tab]'); if (!b) return; UI.tab = b.getAttribute('data-tab'); saveUI(); render(); window.scrollTo(0, 0); });
 $('priceBtn').addEventListener('click', function () { updatePrices(true); });
+if ($('privBtn')) $('privBtn').addEventListener('click', function () { setPriv(!PRIV()); });
 document.addEventListener('click', function (e) {
   var g = e.target.closest('[data-guide]');
   if (g) { e.preventDefault(); UI.tab = 'guida'; UI.guideOpen = g.getAttribute('data-guide'); closeSheet(); saveUI(); render(); var el = document.getElementById('g-' + UI.guideOpen); if (el) el.scrollIntoView({ block: 'start' }); }
@@ -1455,17 +1466,23 @@ function renderOverview(host) {
   var m12 = n - i0 >= 300 ? periodMetrics(r, Math.max(i0, n - 365), n, rf, idx) : null;
   var all = periodMetrics(r, i0, n, rf, idx);
   var h = '<div class="cols two"><div class="stack">';
-  h += '<section class="panel hero"><div><div class="muted" style="font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em">' + (r.id === '*' ? 'Patrimonio di famiglia' : 'Portafoglio di ' + esc(pfName(r.id))) + '</div><div class="hero-v num">' + eur(value, true) + '</div></div>' +
-    '<div class="hero-sub"><span>Versato netto <b>' + eur(flows, true) + '</b></span><span>Guadagno <b class="' + sgnCls(gain) + '">' + eur(gain, true) + '</b>' + q('mtm') + '</span></div>' +
+  h += '<section class="panel hero"><div><div class="muted" style="font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em">' + (r.id === '*' ? 'Patrimonio di famiglia' : 'Portafoglio di ' + esc(pfName(r.id))) + '</div><div class="hero-v num' + (PRIV() ? ' masked' : '') + '">' + eur(value, true) + '</div></div>' +
+    (PRIV() ? '<div class="hero-sub"><span>Guadagno sul versato netto <b class="' + sgnCls(gain) + '">' + pct(flows > 0 ? gain / flows : null, 1, true) + '</b>' + q('mtm') + '</span></div>'
+      : '<div class="hero-sub"><span>Versato netto <b>' + eur(flows, true) + '</b></span><span>Guadagno <b class="' + sgnCls(gain) + '">' + eur(gain, true) + '</b>' + q('mtm') + '</span></div>') +
     '<div class="chips">' + chip('Da inizio anno', ytd && ytd.twr, 'twr') + (m12 ? chip('Ultimi 12 mesi', m12.twr, 'twr') : '') + chip(all && all.twrAnn != null ? 'Dall’inizio, annuo' : 'Dall’inizio', all && (all.twrAnn != null ? all.twrAnn : all.twr), 'twr') + chip('Rendimento sui versamenti', all && (all.irrAnn != null ? all.irrAnn : all.irr), 'irr') + '</div></section>';
   var al = buildAlerts(r);
   if (al.length) h += '<section class="alerts">' + al.map(function (a) { return '<div class="alert ' + a.lv + '"><span class="ic" aria-hidden="true">' + (a.lv === 'info' ? 'i' : '!') + '</span><p><span class="t">' + a.title + '</span>' + a.text + '</p>' + (a.btn || '<span></span>') + '</div>'; }).join('') + '</section>';
   h += '<section class="panel"><h2>Andamento <span class="seg" id="rangeSeg">' + [['ytd', 'Anno'], ['1y', '12 mesi'], ['3y', '3 anni'], ['all', 'Tutto']].map(function (x) { return '<button type="button" data-r="' + x[0] + '" aria-pressed="' + (UI.range === x[0]) + '">' + x[1] + '</button>'; }).join('') + '</span></h2><div class="chart" id="valChart"></div>' +
-    '<div class="legend"><span><i style="background:var(--c1)"></i>Valore del portafoglio</span><span><i class="dash"></i>Versato netto</span></div></section>';
+    (PRIV() ? '<div class="legend"><span><i style="background:var(--c1)"></i>Rendimento cumulato dall’inizio del periodo (TWR)</span></div></section>'
+      : '<div class="legend"><span><i style="background:var(--c1)"></i>Valore del portafoglio</span><span><i class="dash"></i>Versato netto</span></div></section>');
   h += '</div><div class="stack">' + allocationPanel(r) + nextFlowsPanel(r) + '</div></div>';
   host.innerHTML = h;
   var cum = new Float64Array(r.F.length), s = 0; for (var i = 0; i < r.F.length; i++) { s += r.F[i]; cum[i] = s; }
   var from = UI.range === 'ytd' ? Math.max(i0, eoy(y - 1) - r.start) : UI.range === '1y' ? Math.max(i0, n - 365) : UI.range === '3y' ? Math.max(i0, n - 1095) : i0;
+  if (PRIV()) {
+    var perf = new Float64Array(idx.length), base = idx[from] || 1; for (var j = 0; j < idx.length; j++) perf[j] = idx[j] / base - 1;
+    lineChart($('valChart'), { start: r.start, i0: from, i1: n, aria: 'Rendimento cumulato nel tempo', fmt: function (v) { return pct(v, Math.abs(v) < 0.1 ? 1 : 0, true); }, fmtTip: function (v) { return pct(v, 2, true); }, series: [{ label: 'Rendimento', data: perf, color: 'var(--c1)' }] });
+  } else
   lineChart($('valChart'), { start: r.start, i0: from, i1: n, aria: 'Valore del portafoglio nel tempo', series: [{ label: 'Valore', data: r.V, color: 'var(--c1)' }, { label: 'Versato netto', data: cum, color: 'var(--muted)', dash: true }] });
   $('rangeSeg').addEventListener('click', function (e) { var b = e.target.closest('[data-r]'); if (!b) return; UI.range = b.getAttribute('data-r'); saveUI(); render(); });
   wireAllocation(r);
@@ -1482,7 +1499,7 @@ function buildAlerts(r) {
       if (ey === y) out.push({ lv: 'crit', title: 'Minusvalenze in scadenza', text: eur(byYear[ey]) + ' di minusvalenze' + (STATE.portfolios.length > 1 ? ' di ' + esc(pfName(id)) : '') + ' scadono il 31/12/' + ey + '. Dopo non potrai più usarle.', btn: '<button type="button" class="btn sm" data-go="fisco">Come recuperarle</button>' });
       else if (ey === y + 1) out.push({ lv: 'warn', title: 'Minusvalenze', text: eur(byYear[ey]) + ' di minusvalenze' + (STATE.portfolios.length > 1 ? ' di ' + esc(pfName(id)) : '') + ' scadono il 31/12/' + ey + '.', btn: '<button type="button" class="btn sm" data-go="fisco">Vedi</button>' });
     });
-    pr.warnings.forEach(function (w) { out.push({ lv: w.kind === 'cassa' || w.kind === 'posizione' ? 'warn' : 'info', title: w.kind === 'cassa' ? 'Liquidità' : w.kind === 'titolo' ? 'Scheda titolo incompleta' : w.kind === 'deposito' ? 'Depositi' : w.kind === 'futuro' ? 'Data futura' : 'Movimenti', text: esc(w.text) + (STATE.portfolios.length > 1 ? ' <span class="muted">(' + esc(pfName(id)) + ')</span>' : '') }); });
+    pr.warnings.forEach(function (w) { out.push({ lv: w.kind === 'cassa' || w.kind === 'posizione' ? 'warn' : 'info', title: w.kind === 'cassa' ? 'Liquidità' : w.kind === 'titolo' ? 'Scheda titolo incompleta' : w.kind === 'deposito' ? 'Depositi' : w.kind === 'futuro' ? 'Data futura' : 'Movimenti', text: esc(PRIV() ? w.text.replace(/[−-]?\d[\d.]*(,\d+)?\s?€/g, MASK).replace(/(vendi|ne hai) [\d.,]+/g, '$1 ' + MASK) : w.text) + (STATE.portfolios.length > 1 ? ' <span class="muted">(' + esc(pfName(id)) + ')</span>' : '') }); });
   });
   var stale = r.positions.filter(function (p) { return p.priceSrc === 'operazione' || (p.priceDay !== null && t - p.priceDay > 6); });
   if (stale.length) out.push({ lv: 'info', title: 'Prezzi', text: 'Per ' + stale.length + (stale.length === 1 ? ' titolo il prezzo' : ' titoli il prezzo') + ' non è aggiornato (' + stale.slice(0, 3).map(function (p) { return esc(p.ins.name); }).join(', ') + (stale.length > 3 ? '…' : '') + ').', btn: STATE.settings.proxy && !IN_CLAUDE ? '<button type="button" class="btn sm" id="alPrices">Aggiorna</button>' : '<button type="button" class="btn sm" data-go="impostazioni">Imposta</button>' });
@@ -1500,23 +1517,24 @@ function allocationPanel(r) {
   var items = rb.rows.filter(function (x) { return x.cur > 0.5; }).map(function (x) { return { label: x.label, value: x.cur, color: CLASS_COLOR[x.id] }; });
   var h = '<section class="panel" id="allocPanel"><h2>Asset class <small>' + (hasT ? 'banda ±' + nf(band, 0) + ' punti' : 'nessun obiettivo impostato') + '</small></h2>';
   var showT = hasT || UI.editT;
-  h += '<div class="donut-wrap">' + donutSVG(items, rb.total) + '<div class="tw"><table class="tbl"><thead><tr><th>Classe</th><th>Valore</th><th>%</th>' + (showT ? '<th>Obiettivo</th>' : '') + '</tr></thead><tbody>' +
+  h += '<div class="donut-wrap">' + donutSVG(items, rb.total) + '<div class="tw"><table class="tbl"><thead><tr><th>Classe</th>' + (PRIV() ? '' : '<th>Valore</th>') + '<th>%</th>' + (showT ? '<th>Obiettivo</th>' : '') + '</tr></thead><tbody>' +
     rb.rows.filter(function (x) { return x.cur > 0.5 || x.tgtPct > 0 || UI.editT; }).map(function (x) {
       var st = !hasT ? '' : x.out ? ' <span class="pill ' + (x.diffPct > 0 ? 'warn' : 'acc') + '">' + (x.diffPct > 0 ? 'sopra' : 'sotto') + '</span>' : ' <span class="pill ok">ok</span>';
-      return '<tr><td><span class="sw" style="background:' + CLASS_COLOR[x.id] + '"></span>' + x.label + '</td><td>' + eur(x.cur, true) + '</td><td>' + pct(x.curPct, 1) + '</td>' + (!showT ? '' : '<td>' +
+      return '<tr><td><span class="sw" style="background:' + CLASS_COLOR[x.id] + '"></span>' + x.label + '</td>' + (PRIV() ? '' : '<td>' + eur(x.cur, true) + '</td>') + '<td>' + pct(x.curPct, 1) + '</td>' + (!showT ? '' : '<td>' +
         (UI.editT ? '<input class="inp" style="width:72px;min-height:32px;padding:4px 6px;text-align:right" data-tg="' + x.id + '" inputmode="decimal" value="' + (tg[x.id] ? nf(tg[x.id], 1).replace(/,0$/, '') : '') + '" aria-label="Obiettivo ' + x.label + '">' : pct(x.tgtPct, 0) + st) + '</td>') + '</tr>';
     }).join('') + '</tbody></table></div></div>';
   h += '<div class="toolbar" style="margin:12px 0 0">' + (UI.editT ? '<button type="button" class="btn primary sm" id="tgSave">Salva obiettivi</button><button type="button" class="btn sm" id="tgCancel">Annulla</button><span class="note" style="margin:0">In % del totale' + (r.id === '*' ? ' della famiglia' : '') + '. Lascia vuote le classi che non vuoi.</span>' : '<button type="button" class="btn sm" id="tgEdit">' + (hasT ? 'Modifica obiettivi' : 'Imposta gli obiettivi') + '</button>' + q('ribilancia')) + '</div>';
   if (hasT && !UI.editT) {
+    var priv = PRIV();
     if (Math.abs(rb.tsum - 100) > 0.5) h += '<p class="note">Gli obiettivi sommano a ' + nf(rb.tsum, 1) + '%: li riproporziono a 100.</p>';
-    h += '<h3>Con un nuovo versamento</h3><div class="toolbar" style="margin:0 0 6px"><input class="inp" id="extraInp" inputmode="decimal" placeholder="Importo da investire" style="max-width:190px" value="' + (UI.extra ? nf(UI.extra, 0) : '') + '"><button type="button" class="btn sm" id="extraGo">Calcola</button></div>';
-    if (UI.extra > 0) h += '<div class="tw"><table class="tbl"><tbody>' + rb.rows.filter(function (x) { return rb.plan[x.id] > 1; }).map(function (x) { return '<tr><td><span class="sw" style="background:' + CLASS_COLOR[x.id] + '"></span>' + x.label + '</td><td>' + eur(rb.plan[x.id], true) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+    if (!priv) h += '<h3>Con un nuovo versamento</h3><div class="toolbar" style="margin:0 0 6px"><input class="inp" id="extraInp" inputmode="decimal" placeholder="Importo da investire" style="max-width:190px" value="' + (UI.extra ? nf(UI.extra, 0) : '') + '"><button type="button" class="btn sm" id="extraGo">Calcola</button></div>';
+    if (UI.extra > 0 && !priv) h += '<div class="tw"><table class="tbl"><tbody>' + rb.rows.filter(function (x) { return rb.plan[x.id] > 1; }).map(function (x) { return '<tr><td><span class="sw" style="background:' + CLASS_COLOR[x.id] + '"></span>' + x.label + '</td><td>' + eur(rb.plan[x.id], true) + '</td></tr>'; }).join('') + '</tbody></table></div>';
     var outRows = rb.rows.filter(function (x) { return x.out; });
     h += '<h3>Ribilanciamento completo</h3>';
     if (!outRows.length) h += '<p class="note">Tutte le classi sono dentro la banda: non serve fare niente.</p>';
     else {
-      h += '<div class="tw"><table class="tbl"><thead><tr><th>Classe</th><th>Compra / vendi</th></tr></thead><tbody>' + rb.rows.filter(function (x) { return Math.abs(x.need) > 1 && x.tgtPct + x.curPct > 0; }).map(function (x) { return '<tr><td><span class="sw" style="background:' + CLASS_COLOR[x.id] + '"></span>' + x.label + '</td><td class="' + (x.need > 0 ? 'up' : 'down') + '">' + actionWord(x.id, x.need) + ' ' + eur(Math.abs(x.need), true) + '</td></tr>'; }).join('') + '</tbody></table></div>';
-      if (rb.sells.length) h += '<p class="note">Per le vendite conviene partire da: ' + rb.sells.map(function (s) { return '<b>' + esc(s.name) + '</b> (' + eur(s.amount, true) + ', tasse stimate ' + eur(s.tax, true) + ')'; }).join(', ') + '. Totale tasse stimate <b>' + eur(rb.taxTot, true) + '</b>.</p>';
+      h += '<div class="tw"><table class="tbl"><thead><tr><th>Classe</th><th>Compra / vendi</th></tr></thead><tbody>' + rb.rows.filter(function (x) { return Math.abs(x.need) > 1 && x.tgtPct + x.curPct > 0; }).map(function (x) { return '<tr><td><span class="sw" style="background:' + CLASS_COLOR[x.id] + '"></span>' + x.label + '</td><td class="' + (x.need > 0 ? 'up' : 'down') + '">' + actionWord(x.id, x.need) + ' ' + (priv ? pct(rb.total > 0 ? Math.abs(x.need) / rb.total : 0, 1) + ' del totale' : eur(Math.abs(x.need), true)) + '</td></tr>'; }).join('') + '</tbody></table></div>';
+      if (rb.sells.length && !priv) h += '<p class="note">Per le vendite conviene partire da: ' + rb.sells.map(function (s) { return '<b>' + esc(s.name) + '</b> (' + eur(s.amount, true) + ', tasse stimate ' + eur(s.tax, true) + ')'; }).join(', ') + '. Totale tasse stimate <b>' + eur(rb.taxTot, true) + '</b>.</p>';
       h += '<p class="note">Prima di vendere, prova a riequilibrare con i nuovi versamenti: non costa tasse.</p>';
     }
   }
@@ -1558,13 +1576,13 @@ function lineChart(host, o) {
   var mn = Infinity, mx = -Infinity;
   o.series.forEach(function (s) { for (var i = i0; i <= i1; i++) { var v = s.data[i]; if (v < mn) mn = v; if (v > mx) mx = v; } });
   if (!isFinite(mn)) { host.innerHTML = ''; return; }
-  if (mx - mn < 1) { mn -= 1; mx += 1; }
+  if (mx - mn < (o.fmt ? 0.002 : 1)) { var c0 = (mx + mn) / 2, hw = o.fmt ? 0.001 : 1; mn = c0 - hw; mx = c0 + hw; }
   var pad = (mx - mn) * 0.06; mn -= pad; mx += pad;
   var ticks = niceTicks(mn, mx, 4).filter(function (t) { return t >= mn && t <= mx; });
   function X(i) { return pL + (i - i0) / N * (W - pL - pR); }
   function Y(v) { return pT + (1 - (v - mn) / (mx - mn)) * (H - pT - pB); }
   var g = '';
-  ticks.forEach(function (t) { g += '<line x1="' + pL + '" x2="' + (W - pR) + '" y1="' + Y(t).toFixed(1) + '" y2="' + Y(t).toFixed(1) + '" style="stroke:var(--line)"/><text x="' + (pL - 8) + '" y="' + (Y(t) + 4).toFixed(1) + '" text-anchor="end" font-size="11" style="fill:var(--muted)">' + shortEur(t) + '</text>'; });
+  ticks.forEach(function (t) { g += '<line x1="' + pL + '" x2="' + (W - pR) + '" y1="' + Y(t).toFixed(1) + '" y2="' + Y(t).toFixed(1) + '" style="stroke:var(--line)"/><text x="' + (pL - 8) + '" y="' + (Y(t) + 4).toFixed(1) + '" text-anchor="end" font-size="11" style="fill:var(--muted)">' + (o.fmt ? o.fmt(t) : shortEur(t)) + '</text>'; });
   var d0 = o.start + i0, d1 = o.start + i1, span = d1 - d0, y0 = yearOf(d0), y1 = yearOf(d1), labels = [];
   if (span > 900) for (var yy = y0 + 1; yy <= y1; yy++) labels.push([Math.round(Date.UTC(yy, 0, 1) / DAYMS), String(yy)]);
   else { var stepM = span > 400 ? 3 : span > 150 ? 2 : 1, t0 = new Date(d0 * DAYMS); for (var k = 1; k < 40; k++) { var dt = Math.round(Date.UTC(t0.getUTCFullYear(), t0.getUTCMonth() + k, 1) / DAYMS); if (dt > d1) break; var mm = new Date(dt * DAYMS).getUTCMonth(); if (mm % stepM === 0) labels.push([dt, MONTHS[mm] + (mm === 0 ? ' ' + String(yearOf(dt)).slice(2) : '')]); } }
@@ -1588,7 +1606,7 @@ function lineChart(host, o) {
     var i = Math.round(i0 + (px - pL) / (W - pL - pR) * N); i = Math.max(i0, Math.min(i1, i));
     var x = X(i); xh.setAttribute('x1', x); xh.setAttribute('x2', x); xh.setAttribute('visibility', 'visible');
     dots.innerHTML = o.series.map(function (s) { return '<circle cx="' + x.toFixed(1) + '" cy="' + Y(s.data[i]).toFixed(1) + '" r="4.5" style="fill:' + s.color + ';stroke:var(--surface)" stroke-width="2"/>'; }).join('');
-    tt.innerHTML = '<div><span class="muted">' + fmtDay(o.start + i) + '</span></div>' + o.series.map(function (s) { return '<div><span><i class="sw" style="background:' + s.color + '"></i>' + s.label + '</span><b>' + eur(s.data[i], true) + '</b></div>'; }).join('') +
+    tt.innerHTML = '<div><span class="muted">' + fmtDay(o.start + i) + '</span></div>' + o.series.map(function (s) { return '<div><span><i class="sw" style="background:' + s.color + '"></i>' + s.label + '</span><b>' + (o.fmtTip ? o.fmtTip(s.data[i]) : eur(s.data[i], true)) + '</b></div>'; }).join('') +
       (o.series.length > 1 ? '<div><span>Differenza</span><b class="' + sgnCls(o.series[0].data[i] - o.series[1].data[i]) + '">' + eur(o.series[0].data[i] - o.series[1].data[i], true) + '</b></div>' : '');
     tt.hidden = false;
     var left = x * rc.width / W + 12; if (left + 170 > rc.width) left = x * rc.width / W - 182;
@@ -1610,7 +1628,7 @@ function donutSVG(items, total) {
     }
     a = a1;
   });
-  g += '<text x="' + cx + '" y="' + (cy - 4) + '" text-anchor="middle" font-size="12" style="fill:var(--muted)">Totale</text><text x="' + cx + '" y="' + (cy + 16) + '" text-anchor="middle" font-size="17" font-weight="700" style="fill:var(--ink)">' + shortEur(total) + '</text>';
+  g += '<text x="' + cx + '" y="' + (cy - 4) + '" text-anchor="middle" font-size="12" style="fill:var(--muted)">Totale</text><text x="' + cx + '" y="' + (cy + 16) + '" text-anchor="middle" font-size="17" font-weight="700" style="fill:var(--ink)">' + (PRIV() ? '100%' : shortEur(total)) + '</text>';
   return '<svg viewBox="0 0 220 220" role="img" aria-label="Composizione per asset class">' + g + '</svg>';
 }
 function barsSVG(rows) {
@@ -1632,30 +1650,32 @@ function renderPositions(host) {
   if (!RES) { renderWelcome(host); return; }
   var r = R(), pos = r.positions.slice().sort(function (a, b) { return b.value - a.value; });
   var secV = sum(pos.map(function (p) { return p.value; })), depV = sum(r.deposits.map(function (x) { return x.value; })), tot = secV + depV + r.cash;
-  var h = '<div class="stack"><section class="panel"><div class="chips">' + [['Titoli', secV], ['Depositi', depV], ['Liquidità', r.cash], ['Totale', tot]].map(function (x) { return '<div class="chip"><span>' + x[0] + '</span><b>' + eur(x[1], true) + '</b></div>'; }).join('') + '</div></section>';
+  var priv = PRIV();
+  var h = '<div class="stack"><section class="panel"><div class="chips">' + [['Titoli', secV], ['Depositi', depV], ['Liquidità', r.cash], ['Totale', tot]].map(function (x) { return '<div class="chip"><span>' + x[0] + '</span><b>' + (priv ? pct(tot ? x[1] / tot : 0, 1) : eur(x[1], true)) + '</b></div>'; }).join('') + '</div></section>';
   h += '<section class="panel"><h2>Titoli <small>tocca una riga per i dettagli</small></h2>';
   if (!pos.length) h += '<p class="note">Nessun titolo in portafoglio.</p>';
   else {
-    h += '<div class="tw"><table class="tbl"><thead><tr><th>Titolo</th><th>Quantità</th><th>Prezzo medio</th><th>Prezzo</th><th>Valore</th><th>Plus / minus</th><th>Peso</th></tr></thead><tbody>';
+    h += '<div class="tw"><table class="tbl"><thead><tr><th>Titolo</th>' + (priv ? '' : '<th>Quantità</th>') + '<th>Prezzo medio</th><th>Prezzo</th>' + (priv ? '' : '<th>Valore</th>') + '<th>Plus / minus</th><th>Peso</th></tr></thead><tbody>';
     pos.forEach(function (p) {
       var open = UI.open === p.isin, src = p.priceSrc === 'auto' ? 'Borsa Italiana' : p.priceSrc === 'storico' ? 'storico' : p.priceSrc === 'manuale' ? 'manuale' : p.priceSrc === 'esempio' ? 'esempio' : 'da operazione';
       h += '<tr class="click' + (open ? ' sel' : '') + '" data-isin="' + p.isin + '"><td class="wrap"><b>' + esc(p.ins.name) + '</b><span class="sub"><span class="mono">' + p.isin + '</span> · <span class="sw" style="background:' + CLASS_COLOR[p.cls] + ';margin:0 4px 0 0"></span>' + CLASS_LABEL[p.cls] + (p.ins.inferred ? ' · <span class="pill warn">da controllare</span>' : '') + '</span></td>' +
-        '<td>' + qf(p.qty) + (isBond(p.ins) ? '<span class="sub">nominale</span>' : '') + '</td><td>' + nf(p.avg, isBond(p.ins) ? 3 : 2) + '</td><td>' + nf(p.price, isBond(p.ins) ? 3 : 2) + '<span class="sub">' + (p.priceDay ? fmtDay(p.priceDay).slice(0, 5) + ' · ' : '') + src + '</span></td>' +
-        '<td>' + eur(p.value) + (p.accrued ? '<span class="sub">di cui rateo ' + eur(p.accrued) + '</span>' : '') + '</td><td class="' + sgnCls(p.pnl) + '">' + eur(p.pnl) + '<span class="sub">' + pct(p.pnlPct, 1, true) + '</span></td><td>' + pct(tot ? p.value / tot : 0, 1) + '</td></tr>';
-      if (open) h += '<tr><td colspan="7" style="white-space:normal;background:var(--surface-2);padding:12px">' + positionDetail(p, r) + '</td></tr>';
+        (priv ? '' : '<td>' + qf(p.qty) + (isBond(p.ins) ? '<span class="sub">nominale</span>' : '') + '</td>') + '<td>' + nf(p.avg, isBond(p.ins) ? 3 : 2) + '</td><td>' + nf(p.price, isBond(p.ins) ? 3 : 2) + '<span class="sub">' + (p.priceDay ? fmtDay(p.priceDay).slice(0, 5) + ' · ' : '') + src + '</span></td>' +
+        (priv ? '' : '<td>' + eur(p.value) + (p.accrued ? '<span class="sub">di cui rateo ' + eur(p.accrued) + '</span>' : '') + '</td>') + '<td class="' + sgnCls(p.pnl) + '">' + (priv ? pct(p.pnlPct, 1, true) : eur(p.pnl) + '<span class="sub">' + pct(p.pnlPct, 1, true) + '</span>') + '</td><td>' + pct(tot ? p.value / tot : 0, 1) + '</td></tr>';
+      if (open) h += '<tr><td colspan="' + (priv ? 5 : 7) + '" style="white-space:normal;background:var(--surface-2);padding:12px">' + positionDetail(p, r) + '</td></tr>';
     });
-    h += '</tbody><tfoot><tr><td>Totale titoli</td><td></td><td></td><td></td><td>' + eur(secV) + '</td><td class="' + sgnCls(sum(pos.map(function (p) { return p.pnl; }))) + '">' + eur(sum(pos.map(function (p) { return p.pnl; }))) + '</td><td>' + pct(tot ? secV / tot : 0, 1) + '</td></tr></tfoot></table></div>';
+    var pnlT = sum(pos.map(function (p) { return p.pnl; })), costT = secV - pnlT;
+    h += '</tbody><tfoot><tr><td>Totale titoli</td>' + (priv ? '<td></td><td></td>' : '<td></td><td></td><td></td><td>' + eur(secV) + '</td>') + '<td class="' + sgnCls(pnlT) + '">' + (priv ? pct(costT > 0 ? pnlT / costT : 0, 1, true) : eur(pnlT)) + '</td><td>' + pct(tot ? secV / tot : 0, 1) + '</td></tr></tfoot></table></div>';
     h += '<p class="note">Prezzo medio di carico calcolato col costo medio ponderato, commissioni comprese' + q('pmc') + '. Per i bond i prezzi sono per 100 di nominale e il valore include il rateo maturato' + q('rateo') + '.</p>';
   }
   h += '</section>';
   var deps = r.deposits.filter(function (x) { return x.active; });
   h += '<section class="panel"><h2>Depositi</h2>';
   if (!deps.length) h += '<p class="note" style="margin:0">Nessun deposito attivo.</p>';
-  else h += '<div class="tw"><table class="tbl"><thead><tr><th>Deposito</th><th>Importo</th><th>Tasso lordo</th><th>Scadenza</th><th>Valore oggi</th></tr></thead><tbody>' + deps.map(function (x) {
-    var dp = x.dep; return '<tr><td class="wrap"><b>' + esc(dp.name) + '</b><span class="sub">' + MODE_LABEL[dp.mode] + (x.pf && STATE.portfolios.length > 1 ? ' · ' + esc(pfName(x.pf)) : '') + '</span></td><td>' + eur(dp.amount, true) + '</td><td>' + nf(dp.rate * 100, 2) + '%</td><td>' + (dp.end ? fmtDay(dp.end) : 'libero') + '</td><td>' + eur(x.value) + '</td></tr>';
+  else h += '<div class="tw"><table class="tbl"><thead><tr><th>Deposito</th>' + (priv ? '' : '<th>Importo</th>') + '<th>Tasso lordo</th><th>Scadenza</th>' + (priv ? '<th>Peso</th>' : '<th>Valore oggi</th>') + '</tr></thead><tbody>' + deps.map(function (x) {
+    var dp = x.dep; return '<tr><td class="wrap"><b>' + esc(dp.name) + '</b><span class="sub">' + MODE_LABEL[dp.mode] + (x.pf && STATE.portfolios.length > 1 ? ' · ' + esc(pfName(x.pf)) : '') + '</span></td>' + (priv ? '' : '<td>' + eur(dp.amount, true) + '</td>') + '<td>' + nf(dp.rate * 100, 2) + '%</td><td>' + (dp.end ? fmtDay(dp.end) : 'libero') + '</td><td>' + (priv ? pct(tot ? x.value / tot : 0, 1) : eur(x.value)) + '</td></tr>';
   }).join('') + '</tbody></table></div><p class="note">Il valore include gli interessi netti maturati fino a oggi' + q('depositi') + '.</p>';
   h += '</section>';
-  if (r.id === '*' && STATE.portfolios.length > 1) h += '<section class="panel"><h2>Liquidità per portafoglio</h2><div class="tw"><table class="tbl"><tbody>' + STATE.portfolios.map(function (p) { var pr = RES.pf[p.id]; return '<tr><td>' + esc(p.name) + '</td><td class="' + (pr.cash < 0 ? 'down' : '') + '">' + eur(pr.cash) + '</td></tr>'; }).join('') + '</tbody></table></div></section>';
+  if (r.id === '*' && STATE.portfolios.length > 1 && !priv) h += '<section class="panel"><h2>Liquidità per portafoglio</h2><div class="tw"><table class="tbl"><tbody>' + STATE.portfolios.map(function (p) { var pr = RES.pf[p.id]; return '<tr><td>' + esc(p.name) + '</td><td class="' + (pr.cash < 0 ? 'down' : '') + '">' + eur(pr.cash) + '</td></tr>'; }).join('') + '</tbody></table></div></section>';
   host.innerHTML = h + '</div>';
   Array.prototype.forEach.call(host.querySelectorAll('tr.click'), function (tr) { tr.addEventListener('click', function () { var i = tr.getAttribute('data-isin'); UI.open = UI.open === i ? null : i; render(); }); });
   wireDetail(host);
@@ -2113,10 +2133,10 @@ function renderAnalysis(host) {
   for (var y = yNow - 1; y >= y0; y--) rows.push([String(y), periodMetrics(r, Math.max(i0, eoy(y - 1) - r.start), Math.min(n, eoy(y) - r.start), rf, idx)]);
   rows.push(['Dall’inizio', periodMetrics(r, i0, n, rf, idx)]);
   var lowCov = r.coverage < 0.6;
-  var h = '<div class="stack"><section class="panel"><h2>Rendimenti e rischio</h2><div class="tw"><table class="tbl"><thead><tr><th>Periodo</th><th>TWR' + q('twr') + '</th><th>IRR' + q('irr') + '</th><th>Volatilità' + q('vol') + '</th><th>Sharpe' + q('sharpe') + '</th><th>Max perdita' + q('mdd') + '</th><th>Guadagno</th><th>Versato netto</th></tr></thead><tbody>' +
+  var h = '<div class="stack"><section class="panel"><h2>Rendimenti e rischio</h2><div class="tw"><table class="tbl"><thead><tr><th>Periodo</th><th>TWR' + q('twr') + '</th><th>IRR' + q('irr') + '</th><th>Volatilità' + q('vol') + '</th><th>Sharpe' + q('sharpe') + '</th><th>Max perdita' + q('mdd') + '</th>' + (PRIV() ? '' : '<th>Guadagno</th><th>Versato netto</th>') + '</tr></thead><tbody>' +
     rows.filter(function (x) { return x[1]; }).map(function (x) {
       var m = x[1], showRisk = !lowCov;
-      return '<tr><td>' + x[0] + (m.years >= 1.5 ? '<span class="sub">annuo</span>' : '') + '</td><td class="' + sgnCls(m.twr) + '">' + pct(m.years >= 1.5 && m.twrAnn != null ? m.twrAnn : m.twr, 2, true) + '</td><td class="' + sgnCls(m.irr || 0) + '">' + pct(m.years >= 1.5 && m.irrAnn != null ? m.irrAnn : m.irr, 2, true) + '</td><td>' + (showRisk ? pct(m.vol, 1) : '–') + '</td><td>' + (showRisk && m.sharpe != null ? nf(m.sharpe, 2) : '–') + '</td><td>' + (showRisk ? pct(-m.mdd, 1) : '–') + '</td><td class="' + sgnCls(m.gain) + '">' + eur(m.gain, true) + '</td><td>' + eur(m.flows, true) + '</td></tr>';
+      return '<tr><td>' + x[0] + (m.years >= 1.5 ? '<span class="sub">annuo</span>' : '') + '</td><td class="' + sgnCls(m.twr) + '">' + pct(m.years >= 1.5 && m.twrAnn != null ? m.twrAnn : m.twr, 2, true) + '</td><td class="' + sgnCls(m.irr || 0) + '">' + pct(m.years >= 1.5 && m.irrAnn != null ? m.irrAnn : m.irr, 2, true) + '</td><td>' + (showRisk ? pct(m.vol, 1) : '–') + '</td><td>' + (showRisk && m.sharpe != null ? nf(m.sharpe, 2) : '–') + '</td><td>' + (showRisk ? pct(-m.mdd, 1) : '–') + '</td>' + (PRIV() ? '' : '<td class="' + sgnCls(m.gain) + '">' + eur(m.gain, true) + '</td><td>' + eur(m.flows, true) + '</td>') + '</tr>';
     }).join('') + '</tbody></table></div>';
   h += lowCov ? '<p class="note"><b>Volatilità, Sharpe e perdita massima non sono affidabili</b> senza prezzi giornalieri: per ora conosco i prezzi solo nei giorni delle operazioni. <button type="button" class="link" id="anPrices">Importa i prezzi storici</button> (per esempio da Bloomberg) per calcolarli.</p>'
     : '<p class="note">Volatilità e Sharpe da rendimenti settimanali, annualizzati. Tasso privo di rischio ' + nf(STATE.settings.rf, 2) + '% (modificabile nelle impostazioni).</p>';
@@ -2129,9 +2149,9 @@ function renderAnalysis(host) {
   if (bonds.length) {
     var tv = 0, wy = 0, wyn = 0, wd = 0;
     var bt = bonds.map(function (p) { var a = bondYield(p.ins, p.price, RES.today, false), b = bondYield(p.ins, p.price, RES.today, true); if (a) { tv += p.value; wy += a.y * p.value; wyn += (b ? b.y : a.y) * p.value; wd += a.mod * p.value; } return { p: p, a: a, b: b }; });
-    h += '<section class="panel"><h2>Obbligazioni</h2><div class="tw"><table class="tbl"><thead><tr><th class="l">Titolo</th><th>Nominale</th><th>Prezzo</th><th>Scadenza</th><th>Rend. lordo' + q('ytm') + '</th><th>Rend. netto</th><th>Duration' + q('duration') + '</th></tr></thead><tbody>' +
-      bt.map(function (x) { return '<tr><td class="l wrap">' + esc(x.p.ins.name) + '</td><td>' + qf(x.p.qty) + '</td><td>' + nf(x.p.price, 3) + '</td><td>' + (x.p.ins.maturity ? fmtDay(dayOf(x.p.ins.maturity)) : '–') + '</td><td>' + (x.a ? pct(x.a.y, 2) : '–') + '</td><td>' + (x.b ? pct(x.b.y, 2) : '–') + '</td><td>' + (x.a ? nf(x.a.mod, 2) : '–') + '</td></tr>'; }).join('') +
-      '</tbody>' + (tv ? '<tfoot><tr><td>Media ponderata</td><td></td><td></td><td></td><td>' + pct(wy / tv, 2) + '</td><td>' + pct(wyn / tv, 2) + '</td><td>' + nf(wd / tv, 2) + '</td></tr></tfoot>' : '') + '</table></div><p class="note">Rendimenti calcolati sul prezzo di oggi, come se tenessi il titolo fino alla scadenza.</p></section>';
+    h += '<section class="panel"><h2>Obbligazioni</h2><div class="tw"><table class="tbl"><thead><tr><th class="l">Titolo</th>' + (PRIV() ? '' : '<th>Nominale</th>') + '<th>Prezzo</th><th>Scadenza</th><th>Rend. lordo' + q('ytm') + '</th><th>Rend. netto</th><th>Duration' + q('duration') + '</th></tr></thead><tbody>' +
+      bt.map(function (x) { return '<tr><td class="l wrap">' + esc(x.p.ins.name) + '</td>' + (PRIV() ? '' : '<td>' + qf(x.p.qty) + '</td>') + '<td>' + nf(x.p.price, 3) + '</td><td>' + (x.p.ins.maturity ? fmtDay(dayOf(x.p.ins.maturity)) : '–') + '</td><td>' + (x.a ? pct(x.a.y, 2) : '–') + '</td><td>' + (x.b ? pct(x.b.y, 2) : '–') + '</td><td>' + (x.a ? nf(x.a.mod, 2) : '–') + '</td></tr>'; }).join('') +
+      '</tbody>' + (tv ? '<tfoot><tr><td>Media ponderata</td>' + (PRIV() ? '' : '<td></td>') + '<td></td><td></td><td>' + pct(wy / tv, 2) + '</td><td>' + pct(wyn / tv, 2) + '</td><td>' + nf(wd / tv, 2) + '</td></tr></tfoot>' : '') + '</table></div><p class="note">Rendimenti calcolati sul prezzo di oggi, come se tenessi il titolo fino alla scadenza.</p></section>';
   }
   /* calendar */
   var fl = futureFlows(RES, r.id, 730);
@@ -2152,7 +2172,8 @@ function renderAnalysis(host) {
 /* ================= settings ================= */
 function renderSettings(host) {
   var s = STATE.settings;
-  var h = '<div class="cols half"><div class="stack"><section class="panel"><h2>Portafogli</h2><div id="pfList">' + STATE.portfolios.map(function (p) {
+  var h = '<div class="cols half"><div class="stack"><section class="panel"><h2>Modalità riservata</h2><label class="check" for="sPriv"><input type="checkbox" id="sPriv"' + (PRIV() ? ' checked' : '') + '> Nascondi il totale e tutti gli importi in euro: restano solo le percentuali</label><p class="note">Utile per mostrare l’app a qualcuno. Si attiva anche dall’icona con l’occhio in alto. Vale solo su questo dispositivo e non cambia i dati.</p></section>' +
+    '<section class="panel"><h2>Portafogli</h2><div id="pfList">' + STATE.portfolios.map(function (p) {
     var used = STATE.movements.some(function (m) { return m.pf === p.id; });
     return '<div class="toolbar" style="margin-bottom:8px"><input class="inp grow" data-pfname="' + p.id + '" value="' + esc(p.name) + '" aria-label="Nome portafoglio"><button type="button" class="btn sm" data-pfdel="' + p.id + '"' + (used ? ' disabled title="Ha dei movimenti"' : '') + '>Elimina</button></div>';
   }).join('') + '</div><div class="toolbar"><button type="button" class="btn sm" id="pfAdd">+ Aggiungi portafoglio</button><button type="button" class="btn sm primary" id="pfSave">Salva i nomi</button></div><p class="note">Ogni portafoglio ha il suo zainetto fiscale: le minusvalenze di uno non compensano i guadagni dell’altro.</p></section>';
@@ -2169,6 +2190,7 @@ function renderSettings(host) {
   h += '<section class="panel"><h2>Ricomincia</h2><div class="toolbar"><button type="button" class="btn sm" id="dDemo">Carica i dati di esempio</button><button type="button" class="btn sm danger" id="dWipe">Cancella tutti i dati</button></div><p class="note" id="dWipeMsg"></p></section></div></div>';
   host.innerHTML = h;
   Array.prototype.forEach.call(host.querySelectorAll('[data-pfdel]'), function (b) { b.addEventListener('click', function () { var id = b.getAttribute('data-pfdel'); STATE.portfolios = STATE.portfolios.filter(function (p) { return p.id !== id; }); if (UI.scope === id) UI.scope = '*'; changed(); }); });
+  $('sPriv').addEventListener('change', function () { setPriv(this.checked); });
   $('pfAdd').addEventListener('click', function () { STATE.portfolios.push({ id: newId('p'), name: 'Nuovo portafoglio' }); changed(); });
   $('pfSave').addEventListener('click', function () { Array.prototype.forEach.call(host.querySelectorAll('[data-pfname]'), function (inp) { var p = STATE.portfolios.filter(function (x) { return x.id === inp.getAttribute('data-pfname'); })[0]; if (p && inp.value.trim()) p.name = inp.value.trim(); }); changed(); toast('Nomi salvati.'); });
   $('sCalc').addEventListener('click', function () { var a = parseIt($('sShort').value), b = parseIt($('sRf').value), c = parseIt($('sBand').value); if (a > 0) s.shortYears = a; if (b !== null && !isNaN(b)) s.rf = b; if (c > 0) s.band = c; changed(); toast('Impostazioni salvate.'); });
