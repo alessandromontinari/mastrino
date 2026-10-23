@@ -116,6 +116,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .chip { border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; background: var(--surface-2); min-width: 0; }
 .chip span { display: block; font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-weight: 700; }
 .chip b { font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+.chip small { display: block; font-size: .76rem; font-variant-numeric: tabular-nums; color: var(--ink-2); margin-top: 1px; }
+.chip small.up { color: var(--up); } .chip small.down { color: var(--down); }
+.chip.approx b { opacity: .78; }
+.chartbar { margin: -2px 0 10px; }
+.chartbar select.inp { width: auto; max-width: 100%; min-height: 36px; padding: 5px 30px 5px 10px; font-weight: 600; font-size: .88rem; }
+.chartbar .seg { margin-left: auto; }
+.tbl tr.grp td { background: var(--surface-2); }
 
 /* alerts */
 .alerts { display: flex; flex-direction: column; gap: 8px; }
@@ -488,6 +495,13 @@ function runPortfolio(st, pfId, movs, start, today, prices) {
   var V = new Float64Array(n), F = new Float64Array(n), INC = new Float64Array(n);
   var cash = 0, pos = {}, zain = [], realized = [], income = [], credits = [], costs = [], ledger = [];
   var negCash = null, minCash = 0, coverage = 0, coverageDays = 0;
+  /* per asset class: value (CV), money in (CI: purchases, deposit openings), money out (CO: sales, income, deposit payouts),
+     moves between classes (CT, signed: a bond passing from “lungo” to “breve” as it nears maturity) */
+  var CK = CLASSES.map(function (c) { return c.id; }), CV = {}, CI = {}, CO = {}, CT = {}, lastCls = {};
+  CK.forEach(function (k) { CV[k] = new Float64Array(n); CI[k] = new Float64Array(n); CO[k] = new Float64Array(n); CT[k] = new Float64Array(n); });
+  function clsFor(isin, d) { return lastCls[isin] || classOf(I[isin], d, shortY); }
+  function cin(k, idx, a) { if (CI[k]) CI[k][idx] += a; }
+  function cout(k, idx, a) { if (CO[k]) CO[k][idx] += a; }
   function zExpiry(z) { return eoy(z.year + 4); }
   function useMinus(amount, vday) {
     var used = 0, y = yearOf(vday);
@@ -526,11 +540,13 @@ function runPortfolio(st, pfId, movs, start, today, prices) {
         g = Math.abs(m.amount || 0); t = num(m.tax) !== null ? Math.abs(m.tax) : g * distRate(I[m.isin]);
         cash += g - t; INC[idx] += g - t;
         income.push({ day: ev.day, type: 'dividendo', isin: m.isin, desc: (I[m.isin] && I[m.isin].name) || m.desc || m.isin, gross: g, tax: t, net: g - t, auto: false });
+        if (m.isin && I[m.isin]) cout(clsFor(m.isin, ev.day), idx, g - t);
         ledger.push({ ev: ev, cash: g - t }); break;
       case 'PROVENTO':   /* interessi prestito titoli, interessi sulla liquidità, …: importo lordo e tasse trattenute (vuote = importo già netto) */
         g = Math.abs(m.amount || 0); t = num(m.tax) !== null ? Math.abs(m.tax) : 0;
         cash += g - t; INC[idx] += g - t;
         income.push({ day: ev.day, type: 'provento', isin: m.isin || null, desc: m.desc || (m.isin && I[m.isin] && I[m.isin].name) || 'Altro provento', gross: g, tax: t, net: g - t, auto: false });
+        if (m.isin && I[m.isin]) cout(clsFor(m.isin, ev.day), idx, g - t);
         ledger.push({ ev: ev, cash: g - t }); break;
       case 'CEDOLA':
         ins = getIns(ev.isin || m.isin, m.desc);
@@ -542,6 +558,7 @@ function runPortfolio(st, pfId, movs, start, today, prices) {
         }
         cash += g - t; INC[idx] += g - t;
         income.push({ day: ev.day, type: 'cedola', isin: ins ? ins.isin : m.isin, desc: ins ? ins.name : m.desc, gross: g, tax: t, net: g - t, auto: !!ev.auto, qty: ev.auto ? ev.qty : null });
+        if (ins && I[ins.isin]) cout(clsFor(ins.isin, ev.day), idx, g - t);
         ledger.push({ ev: ev, cash: g - t, gross: g, tax: t }); break;
       case 'ACQUISTO': {
         ins = getIns(m.isin, m.desc); q = Math.abs(m.qty || 0); var mlt = multOf(ins), gross = q * (m.price || 0) * mlt, fees = Math.abs(m.fees || 0);
@@ -558,7 +575,7 @@ function runPortfolio(st, pfId, movs, start, today, prices) {
         p = pos[m.isin] = pos[m.isin] || { qty: 0, cost: 0, scarto: 0 };
         p.qty += q; p.cost += gross + fees; p.scarto += sc;
         var paid = gross + fees + rateo - rr - rs;
-        cash -= paid;
+        cash -= paid; cin(clsFor(m.isin, ev.day), idx, paid);
         ledger.push({ ev: ev, cash: -paid, gross: gross, fees: fees, rateo: rateo, rr: rr, rs: rs });
         break;
       }
@@ -590,20 +607,20 @@ function runPortfolio(st, pfId, movs, start, today, prices) {
         var tx = realize(ins, gain, ev.vday, isin);
         var tb = num(m.tax) !== null ? Math.abs(m.tax) : null, taxCash = tb !== null ? tb : tx.tax;
         var got = proceeds + rateo2 - rr2 - rs2 - taxCash;
-        cash += got;
+        cash += got; cout(clsFor(isin, ev.day), idx, got);
         p.qty -= q; p.cost -= costOut; p.scarto -= scOut;
         if (p.qty < 1e-7) { p.qty = 0; p.cost = 0; p.scarto = 0; }
         realized.push({ day: ev.day, vday: ev.vday, type: ev.type, isin: isin, name: ins ? ins.name : isin, kind: ins ? ins.kind : 'altro', qty: q, price: px, proceeds: proceeds, cost: costOut, scarto: scInc, gain: gain, cat: tx.cat, base: tx.base, taxApp: tx.tax, taxBroker: tb, minusUsed: tx.used, minusAdded: tx.minus, auto: !!ev.auto });
         ledger.push({ ev: ev, cash: got, gross: gross2, fees: fees2, rateo: rateo2, rr: rr2, rs: rs2, tax: taxCash, qty: q });
         break;
       }
-      case 'DEPOSITO': cash -= Math.abs(m.amount || 0); ledger.push({ ev: ev, cash: -Math.abs(m.amount || 0) }); break;
+      case 'DEPOSITO': cash -= Math.abs(m.amount || 0); cin('depositi', idx, Math.abs(m.amount || 0)); ledger.push({ ev: ev, cash: -Math.abs(m.amount || 0) }); break;
       case 'INTERESSI':
-        g = ev.gross; t = g * 0.26; cash += g - t; INC[idx] += g - t;
+        g = ev.gross; t = g * 0.26; cash += g - t; INC[idx] += g - t; cout('depositi', idx, g - t);
         income.push({ day: ev.day, type: 'interessi', isin: null, desc: ev.dep.name, gross: g, tax: t, net: g - t, auto: true });
         ledger.push({ ev: ev, cash: g - t, gross: g, tax: t }); break;
       case 'DEP_END':
-        cash += ev.dep.amount - ev.dep.penalty;
+        cash += ev.dep.amount - ev.dep.penalty; cout('depositi', idx, ev.dep.amount - ev.dep.penalty);
         if (ev.dep.penalty) costs.push({ day: ev.day, desc: 'Penale ' + ev.dep.name, amount: ev.dep.penalty });
         ledger.push({ ev: ev, cash: ev.dep.amount - ev.dep.penalty }); break;
     }
@@ -625,15 +642,20 @@ function runPortfolio(st, pfId, movs, start, today, prices) {
     if (cash < minCash) minCash = cash;
     var v = cash, allExact = true, any = false;
     for (var isin in pos) {
-      var pp = pos[isin]; if (pp.qty <= 0) continue;
+      var pp = pos[isin]; if (pp.qty <= 0) { delete lastCls[isin]; continue; }
       var ins2 = I[isin], pr = price(isin, d);
       if (!pr) continue;
       any = true; if (!pr.exact && !(pr.gap && pr.gap <= 4)) allExact = false;
       lastPx[isin] = pr;
-      v += pp.qty * pr.v * multOf(ins2);
-      if (isBond(ins2)) v += pp.qty / 100 * accruedPer100(ins2, d);
+      var pv = pp.qty * pr.v * multOf(ins2);
+      if (isBond(ins2)) pv += pp.qty / 100 * accruedPer100(ins2, d);
+      v += pv;
+      var ck = classOf(ins2, d, shortY), was = lastCls[isin];
+      if (was && was !== ck && CT[was] && CT[ck]) { CT[was][idx] -= pv; CT[ck][idx] += pv; }
+      lastCls[isin] = ck;
+      if (CV[ck]) CV[ck][idx] += pv;
     }
-    for (var j = 0; j < deps.length; j++) v += depValue(deps[j], d);
+    for (var j = 0; j < deps.length; j++) { var dv = depValue(deps[j], d); v += dv; CV.depositi[idx] += dv; }
     V[idx] = v;
     var wd = new Date(d * DAYMS).getUTCDay();
     if (any && wd > 0 && wd < 6) { coverageDays++; if (allExact) coverage++; }
@@ -651,7 +673,7 @@ function runPortfolio(st, pfId, movs, start, today, prices) {
   var depNow = deps.map(function (dp) { return { dep: dp, value: depValue(dp, today), active: depValue(dp, today) > 0 }; });
   if (negCash !== null) warn('cassa', 'La liquidità del portafoglio va sotto zero dal ' + fmtDay(negCash) + ' (minimo ' + Math.round(minCash).toLocaleString('it-IT') + ' €): probabilmente manca un versamento.', null);
   return { id: pfId, start: start, today: today, V: V, F: F, INC: INC, cash: cash, positions: positions, deposits: depNow, depsAll: deps, zain: zain, realized: realized, income: income, credits: credits, costs: costs,
-    ledger: ledger, warnings: warnings, coverage: coverageDays ? coverage / coverageDays : 0 };
+    ledger: ledger, warnings: warnings, coverage: coverageDays ? coverage / coverageDays : 0, cls: { V: CV, IN: CI, OUT: CO, TR: CT } };
 }
 
 function runEngine(st, today) {
@@ -666,10 +688,12 @@ function runEngine(st, today) {
     res.pf[p.id] = runPortfolio(st, p.id, movs.filter(function (m) { return m.pf === p.id; }), start, today, prices);
   });
   /* family */
-  var n = today - start + 1, V = new Float64Array(n), F = new Float64Array(n), INC = new Float64Array(n), byIsin = {}, fam = { id: '*', start: start, today: today, cash: 0, positions: [], deposits: [], zain: [], realized: [], income: [], credits: [], costs: [], ledger: [], warnings: [], coverage: 1 };
+  var n = today - start + 1, V = new Float64Array(n), F = new Float64Array(n), INC = new Float64Array(n), byIsin = {}, fc = { V: {}, IN: {}, OUT: {}, TR: {} }, fam = { id: '*', start: start, today: today, cash: 0, positions: [], deposits: [], zain: [], realized: [], income: [], credits: [], costs: [], ledger: [], warnings: [], coverage: 1 };
+  CLASSES.forEach(function (c) { ['V', 'IN', 'OUT', 'TR'].forEach(function (a) { fc[a][c.id] = new Float64Array(n); }); });
   Object.keys(res.pf).forEach(function (id) {
     var r = res.pf[id];
     for (var i = 0; i < n; i++) { V[i] += r.V[i]; F[i] += r.F[i]; INC[i] += r.INC[i]; }
+    CLASSES.forEach(function (c) { ['V', 'IN', 'OUT', 'TR'].forEach(function (a) { var src = r.cls[a][c.id], dst = fc[a][c.id]; for (var i = 0; i < n; i++) dst[i] += src[i]; }); });
     fam.cash += r.cash;
     r.positions.forEach(function (p) {
       var b = byIsin[p.isin];
@@ -681,7 +705,7 @@ function runEngine(st, today) {
     fam.coverage = Math.min(fam.coverage, r.coverage || 0);
   });
   fam.positions = Object.keys(byIsin).map(function (k) { return byIsin[k]; });
-  fam.V = V; fam.F = F; fam.INC = INC;
+  fam.V = V; fam.F = F; fam.INC = INC; fam.cls = fc;
   res.family = fam;
   return res;
 }
@@ -696,6 +720,52 @@ function twrIndex(V, F) {
     prev = V[i];
   }
   return idx;
+}
+/* asset-class index: money put into the class counts from the start of the day, money taken out (sales, income) at the end
+   rendimento del giorno = (valore + uscite) / (valore di ieri + entrate) − 1 */
+function twrIndexIO(V, IN, OUT) {
+  var n = V.length, idx = new Float64Array(n), prev = 0;
+  for (var i = 0; i < n; i++) {
+    var base = prev + IN[i], r = base > 1e-6 ? (V[i] + OUT[i]) / base - 1 : 0;
+    if (!isFinite(r) || r < -0.99) r = 0;
+    idx[i] = (i ? idx[i - 1] : 1) * (1 + r);
+    prev = V[i];
+  }
+  return idx;
+}
+var CLASS_GROUPS = { bond: { label: 'Obbligazionario (lunghi e brevi)', parts: ['bond_lungo', 'bond_breve'] } };
+/* one asset class (or a group of them) seen as a portfolio of its own: same shape as a portfolio result, so periodMetrics works on it */
+function classSeries(r, k) {
+  var parts = CLASS_GROUPS[k] ? CLASS_GROUPS[k].parts : [k], n = r.V.length;
+  var V = new Float64Array(n), IN = new Float64Array(n), OUT = new Float64Array(n), TR = new Float64Array(n), F = new Float64Array(n), i;
+  parts.forEach(function (p) {
+    var a = r.cls.V[p], b = r.cls.IN[p], c = r.cls.OUT[p], t = r.cls.TR[p]; if (!a) return;
+    for (i = 0; i < n; i++) { V[i] += a[i]; IN[i] += b[i]; OUT[i] += c[i]; TR[i] += t[i]; }
+  });
+  for (i = 0; i < n; i++) { if (TR[i] > 0) IN[i] += TR[i]; else OUT[i] -= TR[i]; F[i] = IN[i] - OUT[i]; }
+  var first = -1, last = -1;
+  for (i = 0; i < n; i++) if (V[i] > 0.01 || IN[i] > 0.01 || OUT[i] > 0.01) { if (first < 0) first = i; last = i; }
+  /* i0: the day before the first money went in, so the first purchase (and its commissions) counts as a flow */
+  return { id: r.id + ':' + k, cls: k, start: r.start, V: V, F: F, IN: IN, OUT: OUT, idx: twrIndexIO(V, IN, OUT), first: first, last: last, i0: Math.max(0, first - 1) };
+}
+/* short windows ending today: from the previous business day, from a week ago, from a month ago */
+function prevBusinessDay(d) { d--; for (var k = 0; k < 7; k++) { var wd = new Date(d * DAYMS).getUTCDay(); if (wd > 0 && wd < 6) return d; d--; } return d; }
+function shortWindows(today) {
+  var wd = new Date(today * DAYMS).getUTCDay(), last = wd > 0 && wd < 6 ? today : prevBusinessDay(today);
+  return [{ id: '1g', label: '1 giorno', long: 'Ultimo giorno', from: prevBusinessDay(last) }, { id: '1s', label: '1 settimana', long: 'Ultima settimana', from: today - 7 }, { id: '1m', label: '1 mese', long: 'Ultimo mese', from: addMonths(today, -1) }];
+}
+/* share of today's invested value whose prices are real (not drawn as a straight line) at both ends of a window */
+function priceFresh(res, r, from, parts) {
+  var t = res.today, tot = 0, ok = 0;
+  function near(a, d) { for (var i = a.length - 1; i >= 0; i--) { if (a[i][0] > d) continue; return d - a[i][0] <= 4; } return false; }
+  r.positions.forEach(function (p) {
+    if (parts && parts.indexOf(p.cls) < 0) return;
+    var a = res.prices[p.isin] || [], v = Math.abs(p.value); tot += v;
+    if (!a.length) return;
+    var startOk = a[0][0] >= from - 4 || near(a, from);
+    if (startOk && near(a, t)) ok += v;
+  });
+  return tot > 0 ? ok / tot : 1;
 }
 function xirr(cfs) {
   if (cfs.length < 2) return null;
@@ -1198,6 +1268,16 @@ var GUIDE = [
     return '<p>Misura come è andato il portafoglio indipendentemente da quando e quanto hai versato: è il numero da confrontare con un indice o con un fondo.</p>' +
       '<div class="f">rendimento del giorno = valore di oggi / (valore di ieri + versamenti di oggi) − 1\nTWR = (1 + r₁) × (1 + r₂) × … − 1\nTWR annuo = (1 + TWR)^(1 / anni) − 1</div>';
   } },
+  { g: 'Rendimenti e rischio', id: 'breve', t: 'Rendimento di 1 giorno, 1 settimana e 1 mese', b: function () {
+    return '<p>Sono TWR come gli altri, su finestre corte che finiscono oggi: <b>1 giorno</b> parte dall’ultimo giorno lavorativo prima di oggi (il lunedì confronta con il venerdì), <b>1 settimana</b> da 7 giorni fa, <b>1 mese</b> dallo stesso giorno del mese scorso. Sotto la percentuale c’è il guadagno in euro nello stesso periodo, al netto di versamenti e prelievi.</p>' +
+      '<div class="f">rendimento = indice TWR di oggi / indice TWR all’inizio della finestra − 1</div>' +
+      '<p>Sono precisi solo se l’app conosce il prezzo di quei giorni: con il ponte i prezzi si accumulano ogni volta che li aggiorni, oppure puoi importare lo storico. Se per un titolo manca il prezzo l’app lo stima con una linea retta tra due prezzi lontani e il numero diventa poco significativo: in quel caso lo segna con ≈.</p>';
+  } },
+  { g: 'Rendimenti e rischio', id: 'classi', t: 'Rendimento di una singola asset class', b: function () {
+    return '<p>Ogni asset class (per esempio i metalli preziosi) viene trattata come un portafoglio a sé. I soldi che entrano sono gli acquisti dei suoi titoli (e le aperture dei depositi); quelli che escono sono vendite, rimborsi, cedole, dividendi e interessi, al netto delle tasse trattenute. Così il rendimento non dipende da quanto hai comprato o venduto e puoi confrontare le classi tra loro e con il portafoglio intero.</p>' +
+      '<div class="f">rendimento del giorno = (valore di oggi + uscite di oggi) / (valore di ieri + entrate di oggi) − 1\nTWR della classe = (1 + r₁) × (1 + r₂) × … − 1</div>' +
+      '<p>Il bollo e la liquidità non appartengono a nessuna classe. Un BTP che passa da “Bond lunghi” a “Bond brevi” perché si avvicina alla scadenza viene spostato da una classe all’altra al valore di quel giorno, senza creare né guadagni né perdite; “Obbligazionario (lunghi e brevi)” li mostra insieme. La classe di ogni titolo si cambia dalla sua scheda in Posizioni.</p>';
+  } },
   { g: 'Rendimenti e rischio', id: 'irr', t: 'Rendimento sui versamenti (IRR o money-weighted)', b: function () {
     return '<p>È il tasso che azzera il valore attuale di tutti i flussi: valore iniziale, versamenti, prelievi e valore finale. Tiene conto di quando hai messo i soldi: se hai versato molto subito prima di un calo, il tuo IRR è più basso del TWR. È il rendimento che hai ottenuto davvero tu.</p>' +
       '<div class="f">0 = − valore iniziale − Σ versamento_k / (1 + r)^t_k + valore finale / (1 + r)^T</div><p>Per periodi più brevi di un anno l’app lo mostra non annualizzato, per confrontarlo col TWR.</p>';
@@ -1340,10 +1420,10 @@ var CLASS_COLOR = { equity: 'var(--c1)', bond_lungo: 'var(--c2)', bond_breve: 'v
 var LS_KEY = 'mastrino.v1', UI_KEY = 'mastrino.ui';
 var IN_CLAUDE = !!(window.claude && typeof window.claude.use === 'function');
 function blankState() { return { v: 1, portfolios: [], instruments: {}, movements: [], settings: { shortYears: 3, rf: 2.5, band: 5, proxy: '', autoPrices: true }, targets: {}, meta: { lastPrices: null, priceStatus: null, demo: false } }; }
-var STATE = blankState(), RES = null, IDXC = {}, storageOK = true;
-var UI = { priv: false, tab: 'panoramica', scope: '*', range: 'all', open: null, fiscPf: null, fiscYear: null, movType: 'tutti', movYear: 'tutti', movQ: '', movAuto: true, movLimit: 150, extra: 0 };
-try { var savedUI = JSON.parse(localStorage.getItem(UI_KEY) || 'null'); if (savedUI && typeof savedUI === 'object') { ['tab', 'scope', 'range'].forEach(function (k) { if (typeof savedUI[k] === 'string') UI[k] = savedUI[k]; }); UI.priv = savedUI.priv === true; } } catch (e) {}
-function saveUI() { try { localStorage.setItem(UI_KEY, JSON.stringify({ tab: UI.tab, scope: UI.scope, range: UI.range, priv: UI.priv })); } catch (e) {} }
+var STATE = blankState(), RES = null, IDXC = {}, CLSC = {}, storageOK = true;
+var UI = { priv: false, tab: 'panoramica', scope: '*', range: 'all', cls: '', cmode: '', open: null, fiscPf: null, fiscYear: null, movType: 'tutti', movYear: 'tutti', movQ: '', movAuto: true, movLimit: 150, extra: 0 };
+try { var savedUI = JSON.parse(localStorage.getItem(UI_KEY) || 'null'); if (savedUI && typeof savedUI === 'object') { ['tab', 'scope', 'range', 'cls', 'cmode'].forEach(function (k) { if (typeof savedUI[k] === 'string') UI[k] = savedUI[k]; }); UI.priv = savedUI.priv === true; } } catch (e) {}
+function saveUI() { try { localStorage.setItem(UI_KEY, JSON.stringify({ tab: UI.tab, scope: UI.scope, range: UI.range, cls: UI.cls, cmode: UI.cmode, priv: UI.priv })); } catch (e) {} }
 function setPriv(on) { UI.priv = !!on; saveUI(); render(); toast(on ? 'Importi nascosti: restano solo le percentuali.' : 'Importi di nuovo visibili.'); }
 function load() {
   try {
@@ -1368,13 +1448,40 @@ function save() {
 function recompute() {
   var before = Object.keys(STATE.instruments).length;
   RES = STATE.movements.some(function (m) { return m.type !== 'TITOLO'; }) ? runEngine(STATE, todayDay()) : null;
-  IDXC = {};
+  IDXC = {}; CLSC = {};
   if (Object.keys(STATE.instruments).length !== before) save();
 }
 function pfName(id) { var p = STATE.portfolios.filter(function (x) { return x.id === id; })[0]; return p ? p.name : id; }
 function R() { if (!RES) return null; if (UI.scope !== '*' && RES.pf[UI.scope]) return RES.pf[UI.scope]; return STATE.portfolios.length === 1 ? RES.pf[STATE.portfolios[0].id] : RES.family; }
 function scopeKey() { return R() ? R().id : '*'; }
 function idxOf(r) { if (!IDXC[r.id]) IDXC[r.id] = twrIndex(r.V, r.F); return IDXC[r.id]; }
+/* asset classes with some history in this scope (plus “all bonds” when both bond classes exist) */
+function clsOf(r, k) { var key = r.id + ':' + k; if (!CLSC[key]) CLSC[key] = classSeries(r, k); return CLSC[key]; }
+function clsLabel(k) { return CLASS_GROUPS[k] ? CLASS_GROUPS[k].label : k === 'cash' ? 'Strumenti di liquidità' : CLASS_LABEL[k] || k; }
+function clsColor(k) { return k === 'bond' ? 'var(--c2)' : CLASS_COLOR[k] || 'var(--c8)'; }
+function clsParts(k) { return CLASS_GROUPS[k] ? CLASS_GROUPS[k].parts : [k]; }
+function classOptions(r) {
+  if (!r.cls) return [];
+  var out = [];
+  CLASSES.forEach(function (c) { if (clsOf(r, c.id).first >= 0) out.push(c.id); });
+  if (out.indexOf('bond_lungo') >= 0 && out.indexOf('bond_breve') >= 0) out.splice(out.indexOf('bond_breve') + 1, 0, 'bond');
+  return out;
+}
+/* 1 giorno, 1 settimana, 1 mese for a portfolio or a class series */
+function shortReturns(r, s, idx, a0, k) {
+  var n = s.V.length - 1;
+  return shortWindows(RES.today).map(function (w) {
+    var a = Math.max(a0, w.from - s.start), live = s.last == null || s.last > a;
+    return { w: w, m: a < n && live ? periodMetrics(s, a, n, 0, idx) : null, fresh: priceFresh(RES, r, w.from, k ? clsParts(k) : null) };
+  });
+}
+function sgnFine(v) { return v > 0.00005 ? 'up' : v < -0.00005 ? 'down' : ''; }
+function signedEur(v) { return PRIV() ? MASK : v > 0.5 ? '+' + eur(v, true) : v < -0.5 ? '−' + eur(-v, true) : eur(0, true); }
+function chipShort(x, guide) {
+  var m = x.m, v = m ? m.twr : null, approx = m && x.fresh < 0.9;
+  return '<div class="chip short' + (approx ? ' approx' : '') + '"' + (m ? ' title="Dal ' + fmtDay(m.from) + ' a oggi' + (approx ? ' · approssimato: per alcuni titoli mancano i prezzi di quei giorni' : '') + '"' : '') + '><span>' + x.w.label + (guide ? q('breve') : '') + '</span><b class="' + sgnFine(v || 0) + '">' + (approx ? '≈ ' : '') + pct(v, 2, true) + '</b>' +
+    (!PRIV() && m ? '<small class="' + (m.gain > 0.5 ? 'up' : m.gain < -0.5 ? 'down' : '') + '">' + signedEur(m.gain) + '</small>' : '') + '</div>';
+}
 function firstActive(r) { for (var i = 0; i < r.V.length; i++) if (Math.abs(r.V[i]) > 0.01 || Math.abs(r.F[i]) > 0.01) return i; return 0; }
 function newId(p) { return p + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 function nextSeq() { var m = 0; STATE.movements.forEach(function (x) { if (x.seq > m) m = x.seq; }); return m + 1; }
@@ -1465,27 +1572,64 @@ function renderOverview(host) {
   var ytd = periodMetrics(r, Math.max(i0, eoy(y - 1) - r.start), n, rf, idx);
   var m12 = n - i0 >= 300 ? periodMetrics(r, Math.max(i0, n - 365), n, rf, idx) : null;
   var all = periodMetrics(r, i0, n, rf, idx);
+  var shorts = shortReturns(r, r, idx, i0, null);
+  var opts = classOptions(r), sel = UI.cls && opts.indexOf(UI.cls) >= 0 ? UI.cls : '';
+  var cmode = PRIV() ? 'perf' : UI.cmode || (sel ? 'perf' : 'val');
   var h = '<div class="cols two"><div class="stack">';
   h += '<section class="panel hero"><div><div class="muted" style="font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em">' + (r.id === '*' ? 'Patrimonio di famiglia' : 'Portafoglio di ' + esc(pfName(r.id))) + '</div><div class="hero-v num' + (PRIV() ? ' masked' : '') + '">' + eur(value, true) + '</div></div>' +
     (PRIV() ? '<div class="hero-sub"><span>Guadagno sul versato netto <b class="' + sgnCls(gain) + '">' + pct(flows > 0 ? gain / flows : null, 1, true) + '</b>' + q('mtm') + '</span></div>'
       : '<div class="hero-sub"><span>Versato netto <b>' + eur(flows, true) + '</b></span><span>Guadagno <b class="' + sgnCls(gain) + '">' + eur(gain, true) + '</b>' + q('mtm') + '</span></div>') +
-    '<div class="chips">' + chip('Da inizio anno', ytd && ytd.twr, 'twr') + (m12 ? chip('Ultimi 12 mesi', m12.twr, 'twr') : '') + chip(all && all.twrAnn != null ? 'Dall’inizio, annuo' : 'Dall’inizio', all && (all.twrAnn != null ? all.twrAnn : all.twr), 'twr') + chip('Rendimento sui versamenti', all && (all.irrAnn != null ? all.irrAnn : all.irr), 'irr') + '</div></section>';
+    '<div class="chips">' + shorts.map(function (x, k) { return chipShort(x, k === 0); }).join('') + '</div>' +
+    '<div class="chips">' + chip('Da inizio anno', ytd && ytd.twr, 'twr') + (m12 ? chip('Ultimi 12 mesi', m12.twr, 'twr') : '') + chip(all && all.twrAnn != null ? 'Dall’inizio, annuo' : 'Dall’inizio', all && (all.twrAnn != null ? all.twrAnn : all.twr), 'twr') + chip('Rendimento sui versamenti', all && (all.irrAnn != null ? all.irrAnn : all.irr), 'irr') + '</div>' +
+    (shorts.some(function (x) { return x.m && x.fresh < 0.9; }) ? '<p class="note" style="margin:-6px 0 0">≈ approssimato: per alcuni titoli mancano i prezzi di quei giorni e li stimo con una linea retta. ' + q('breve') + '</p>' : '') + '</section>';
   var al = buildAlerts(r);
   if (al.length) h += '<section class="alerts">' + al.map(function (a) { return '<div class="alert ' + a.lv + '"><span class="ic" aria-hidden="true">' + (a.lv === 'info' ? 'i' : '!') + '</span><p><span class="t">' + a.title + '</span>' + a.text + '</p>' + (a.btn || '<span></span>') + '</div>'; }).join('') + '</section>';
-  h += '<section class="panel"><h2>Andamento <span class="seg" id="rangeSeg">' + [['ytd', 'Anno'], ['1y', '12 mesi'], ['3y', '3 anni'], ['all', 'Tutto']].map(function (x) { return '<button type="button" data-r="' + x[0] + '" aria-pressed="' + (UI.range === x[0]) + '">' + x[1] + '</button>'; }).join('') + '</span></h2><div class="chart" id="valChart"></div>' +
-    (PRIV() ? '<div class="legend"><span><i style="background:var(--c1)"></i>Rendimento cumulato dall’inizio del periodo (TWR)</span></div></section>'
-      : '<div class="legend"><span><i style="background:var(--c1)"></i>Valore del portafoglio</span><span><i class="dash"></i>Versato netto</span></div></section>');
+  h += '<section class="panel" id="trendPanel"><h2>Andamento <span class="seg" id="rangeSeg">' + [['ytd', 'Anno'], ['1y', '12 mesi'], ['3y', '3 anni'], ['all', 'Tutto']].map(function (x) { return '<button type="button" data-r="' + x[0] + '" aria-pressed="' + (UI.range === x[0]) + '">' + x[1] + '</button>'; }).join('') + '</span></h2>';
+  if (opts.length || !PRIV()) {
+    h += '<div class="toolbar chartbar">';
+    if (opts.length) h += '<select id="clsSel" class="inp" aria-label="Asset class da mostrare"><option value="">Tutto il portafoglio</option>' + opts.map(function (k) { return '<option value="' + k + '"' + (sel === k ? ' selected' : '') + '>' + esc(clsLabel(k)) + '</option>'; }).join('') + '</select>' + q('classi');
+    if (!PRIV()) h += '<span class="seg" id="cmodeSeg">' + [['val', 'Valore'], ['perf', 'Rendimento']].map(function (x) { return '<button type="button" data-cm="' + x[0] + '" aria-pressed="' + (cmode === x[0]) + '">' + x[1] + '</button>'; }).join('') + '</span>';
+    h += '</div>';
+  }
+  h += '<div class="chart" id="valChart"></div>';
+  var lc = sel ? clsColor(sel) : 'var(--c1)';
+  if (cmode === 'perf') h += '<div class="legend"><span><i style="background:' + lc + '"></i>' + (sel ? esc(clsLabel(sel)) : 'Rendimento cumulato (TWR)') + '</span>' + (sel ? '<span><i class="dash"></i>Tutto il portafoglio</span>' : '') + '</div>';
+  else h += '<div class="legend"><span><i style="background:' + lc + '"></i>' + (sel ? 'Valore di ' + esc(clsLabel(sel).toLowerCase()) : 'Valore del portafoglio') + '</span><span><i class="dash"></i>' + (sel ? 'Investito netto nella classe' : 'Versato netto') + '</span></div>';
+  if (sel) h += classSummary(r, sel, value);
+  h += '</section>';
   h += '</div><div class="stack">' + allocationPanel(r) + nextFlowsPanel(r) + '</div></div>';
   host.innerHTML = h;
-  var cum = new Float64Array(r.F.length), s = 0; for (var i = 0; i < r.F.length; i++) { s += r.F[i]; cum[i] = s; }
-  var from = UI.range === 'ytd' ? Math.max(i0, eoy(y - 1) - r.start) : UI.range === '1y' ? Math.max(i0, n - 365) : UI.range === '3y' ? Math.max(i0, n - 1095) : i0;
-  if (PRIV()) {
-    var perf = new Float64Array(idx.length), base = idx[from] || 1; for (var j = 0; j < idx.length; j++) perf[j] = idx[j] / base - 1;
-    lineChart($('valChart'), { start: r.start, i0: from, i1: n, aria: 'Rendimento cumulato nel tempo', fmt: function (v) { return pct(v, Math.abs(v) < 0.1 ? 1 : 0, true); }, fmtTip: function (v) { return pct(v, 2, true); }, series: [{ label: 'Rendimento', data: perf, color: 'var(--c1)' }] });
+  var cs = sel ? clsOf(r, sel) : null, src = cs || r, a0 = cs ? cs.i0 : i0;
+  var cum = new Float64Array(src.F.length), s = 0; for (var i = 0; i < src.F.length; i++) { s += src.F[i]; cum[i] = s; }
+  var from = UI.range === 'ytd' ? eoy(y - 1) - r.start : UI.range === '1y' ? n - 365 : UI.range === '3y' ? n - 1095 : 0;
+  from = Math.max(a0, from);
+  function perfFrom(ix) { var out = new Float64Array(ix.length), base = ix[from] || 1; for (var j = 0; j < ix.length; j++) out[j] = ix[j] / base - 1; return out; }
+  var pctAxis = function (v) { return pct(v, Math.abs(v) < 0.1 ? 1 : 0, true); }, pctTip = function (v) { return pct(v, 2, true); };
+  if (cmode === 'perf') {
+    var ser = [{ label: sel ? clsLabel(sel) : 'Rendimento', data: perfFrom(cs ? cs.idx : idx), color: lc }];
+    if (cs) ser.push({ label: 'Portafoglio', data: perfFrom(idx), color: 'var(--muted)', dash: true });
+    lineChart($('valChart'), { start: r.start, i0: from, i1: n, aria: sel ? 'Rendimento cumulato di ' + clsLabel(sel) + ' confrontato con il portafoglio' : 'Rendimento cumulato nel tempo', fmt: pctAxis, fmtTip: pctTip, fmtDiff: function (v) { return (v > 0.00005 ? '+' : v < -0.00005 ? '−' : '') + nf(Math.abs(v) * 100, 2) + ' punti'; }, series: ser });
   } else
-  lineChart($('valChart'), { start: r.start, i0: from, i1: n, aria: 'Valore del portafoglio nel tempo', series: [{ label: 'Valore', data: r.V, color: 'var(--c1)' }, { label: 'Versato netto', data: cum, color: 'var(--muted)', dash: true }] });
+    lineChart($('valChart'), { start: r.start, i0: from, i1: n, aria: sel ? 'Valore di ' + clsLabel(sel) + ' nel tempo' : 'Valore del portafoglio nel tempo', series: [{ label: 'Valore', data: src.V, color: lc }, { label: sel ? 'Investito netto' : 'Versato netto', data: cum, color: 'var(--muted)', dash: true }] });
   $('rangeSeg').addEventListener('click', function (e) { var b = e.target.closest('[data-r]'); if (!b) return; UI.range = b.getAttribute('data-r'); saveUI(); render(); });
+  if ($('clsSel')) $('clsSel').addEventListener('change', function () { UI.cls = this.value; UI.cmode = ''; saveUI(); render(); var tp = $('trendPanel'); if (tp && tp.getBoundingClientRect().top < 0) tp.scrollIntoView({ block: 'start' }); });
+  if ($('cmodeSeg')) $('cmodeSeg').addEventListener('click', function (e) { var b = e.target.closest('[data-cm]'); if (!b) return; UI.cmode = b.getAttribute('data-cm'); saveUI(); render(); });
   wireAllocation(r);
+}
+function classSummary(r, k, total) {
+  var cs = clsOf(r, k), n = cs.V.length - 1, y = yearOf(RES.today), a0 = cs.i0;
+  function pm(a) { a = Math.max(a0, a); return cs.last > a ? periodMetrics(cs, a, n, 0, cs.idx) : null; }
+  var ytd = pm(eoy(y - 1) - r.start), m12 = n - a0 >= 300 ? pm(n - 365) : null;
+  var all = periodMetrics(cs, a0, n, 0, cs.idx), v = cs.V[n];
+  var h = '<h3>' + esc(clsLabel(k)) + '</h3><div class="chips">' + shortReturns(r, cs, cs.idx, a0, k).map(function (x) { return chipShort(x, false); }).join('') +
+    chip('Da inizio anno', ytd && ytd.twr, 'twr') + (m12 ? chip('Ultimi 12 mesi', m12.twr, 'twr') : '') +
+    chip(all && all.twrAnn != null ? 'Dall’inizio, annuo' : 'Dall’inizio', all && (all.twrAnn != null ? all.twrAnn : all.twr), 'twr') + '</div>';
+  var bits = [];
+  if (v > 0.5) { if (!PRIV()) bits.push('Valore oggi <b>' + eur(v, true) + '</b>'); bits.push('<b>' + pct(total > 0 ? v / total : null, 1) + '</b> del portafoglio'); }
+  else if (cs.last >= 0) bits.push('Non è più in portafoglio dal ' + fmtDay(r.start + cs.last));
+  if (all && !PRIV()) bits.push('guadagno dal ' + fmtDay(r.start + Math.max(0, cs.first)) + ' <b class="' + sgnCls(all.gain) + '">' + signedEur(all.gain) + '</b>');
+  else if (all) bits.push('dati dal ' + fmtDay(r.start + Math.max(0, cs.first)));
+  return h + '<p class="note">' + bits.join(' · ') + '. Cedole, dividendi e interessi della classe sono compresi; il bollo no.</p>';
 }
 function chip(label, v, g) { return '<div class="chip"><span>' + label + q(g) + '</span><b class="' + sgnCls(v || 0) + '">' + pct(v, 1, true) + '</b></div>'; }
 function buildAlerts(r) {
@@ -1607,7 +1751,7 @@ function lineChart(host, o) {
     var x = X(i); xh.setAttribute('x1', x); xh.setAttribute('x2', x); xh.setAttribute('visibility', 'visible');
     dots.innerHTML = o.series.map(function (s) { return '<circle cx="' + x.toFixed(1) + '" cy="' + Y(s.data[i]).toFixed(1) + '" r="4.5" style="fill:' + s.color + ';stroke:var(--surface)" stroke-width="2"/>'; }).join('');
     tt.innerHTML = '<div><span class="muted">' + fmtDay(o.start + i) + '</span></div>' + o.series.map(function (s) { return '<div><span><i class="sw" style="background:' + s.color + '"></i>' + s.label + '</span><b>' + (o.fmtTip ? o.fmtTip(s.data[i]) : eur(s.data[i], true)) + '</b></div>'; }).join('') +
-      (o.series.length > 1 ? '<div><span>Differenza</span><b class="' + sgnCls(o.series[0].data[i] - o.series[1].data[i]) + '">' + eur(o.series[0].data[i] - o.series[1].data[i], true) + '</b></div>' : '');
+      (o.series.length > 1 ? '<div><span>Differenza</span><b class="' + (o.fmtDiff ? sgnFine : sgnCls)(o.series[0].data[i] - o.series[1].data[i]) + '">' + (o.fmtDiff ? o.fmtDiff : function (v) { return eur(v, true); })(o.series[0].data[i] - o.series[1].data[i]) + '</b></div>' : '');
     tt.hidden = false;
     var left = x * rc.width / W + 12; if (left + 170 > rc.width) left = x * rc.width / W - 182;
     tt.style.left = Math.max(0, left) + 'px'; tt.style.top = '8px';
@@ -2128,22 +2272,27 @@ function renderAnalysis(host) {
   if (!RES) { renderWelcome(host); return; }
   var r = R(), n = r.V.length - 1, idx = idxOf(r), rf = (STATE.settings.rf || 0) / 100, i0 = firstActive(r), yNow = yearOf(RES.today), y0 = yearOf(r.start + i0);
   var rows = [];
-  rows.push(['Da inizio anno', periodMetrics(r, Math.max(i0, eoy(yNow - 1) - r.start), n, rf, idx)]);
+  shortReturns(r, r, idx, i0, null).forEach(function (x) { if (x.m) rows.push([x.w.long, x.m, { short: true, approx: x.fresh < 0.9 }]); });
+  var ytdM = periodMetrics(r, Math.max(i0, eoy(yNow - 1) - r.start), n, rf, idx);
+  rows.push(['Da inizio anno', ytdM]);
   if (n - i0 >= 300) rows.push(['Ultimi 12 mesi', periodMetrics(r, Math.max(i0, n - 365), n, rf, idx)]);
   for (var y = yNow - 1; y >= y0; y--) rows.push([String(y), periodMetrics(r, Math.max(i0, eoy(y - 1) - r.start), Math.min(n, eoy(y) - r.start), rf, idx)]);
   rows.push(['Dall’inizio', periodMetrics(r, i0, n, rf, idx)]);
   var lowCov = r.coverage < 0.6;
   var h = '<div class="stack"><section class="panel"><h2>Rendimenti e rischio</h2><div class="tw"><table class="tbl"><thead><tr><th>Periodo</th><th>TWR' + q('twr') + '</th><th>IRR' + q('irr') + '</th><th>Volatilità' + q('vol') + '</th><th>Sharpe' + q('sharpe') + '</th><th>Max perdita' + q('mdd') + '</th>' + (PRIV() ? '' : '<th>Guadagno</th><th>Versato netto</th>') + '</tr></thead><tbody>' +
     rows.filter(function (x) { return x[1]; }).map(function (x) {
-      var m = x[1], showRisk = !lowCov;
+      var m = x[1], o = x[2] || {}, showRisk = !lowCov && !o.short;
+      if (o.short) return '<tr><td>' + x[0] + '<span class="sub">dal ' + fmtDay(m.from) + '</span></td><td class="' + sgnFine(m.twr) + '">' + (o.approx ? '≈ ' : '') + pct(m.twr, 2, true) + '</td><td>–</td><td>–</td><td>–</td><td>–</td>' + (PRIV() ? '' : '<td class="' + sgnCls(m.gain) + '">' + eur(m.gain, true) + '</td><td>' + eur(m.flows, true) + '</td>') + '</tr>';
       return '<tr><td>' + x[0] + (m.years >= 1.5 ? '<span class="sub">annuo</span>' : '') + '</td><td class="' + sgnCls(m.twr) + '">' + pct(m.years >= 1.5 && m.twrAnn != null ? m.twrAnn : m.twr, 2, true) + '</td><td class="' + sgnCls(m.irr || 0) + '">' + pct(m.years >= 1.5 && m.irrAnn != null ? m.irrAnn : m.irr, 2, true) + '</td><td>' + (showRisk ? pct(m.vol, 1) : '–') + '</td><td>' + (showRisk && m.sharpe != null ? nf(m.sharpe, 2) : '–') + '</td><td>' + (showRisk ? pct(-m.mdd, 1) : '–') + '</td>' + (PRIV() ? '' : '<td class="' + sgnCls(m.gain) + '">' + eur(m.gain, true) + '</td><td>' + eur(m.flows, true) + '</td>') + '</tr>';
     }).join('') + '</tbody></table></div>';
+  if (rows.some(function (x) { return x[2] && x[2].approx; })) h += '<p class="note">≈ approssimato: per alcuni titoli mancano i prezzi di quei giorni. ' + q('breve') + '</p>';
   h += lowCov ? '<p class="note"><b>Volatilità, Sharpe e perdita massima non sono affidabili</b> senza prezzi giornalieri: per ora conosco i prezzi solo nei giorni delle operazioni. <button type="button" class="link" id="anPrices">Importa i prezzi storici</button> (per esempio da Bloomberg) per calcolarli.</p>'
     : '<p class="note">Volatilità e Sharpe da rendimenti settimanali, annualizzati. Tasso privo di rischio ' + nf(STATE.settings.rf, 2) + '% (modificabile nelle impostazioni).</p>';
   var bars = rows.filter(function (x) { return x[1] && /^\d{4}$/.test(x[0]); }).reverse().map(function (x) { return { label: x[0], v: x[1].twr }; });
-  var cur = rows[0][1]; if (cur) bars.push({ label: yNow + ' (in corso)', v: cur.twr });
+  if (ytdM) bars.push({ label: yNow + ' (in corso)', v: ytdM.twr });
   if (bars.length > 1) h += '<h3>Anno per anno (TWR)</h3>' + barsSVG(bars);
   h += '</section>';
+  h += classTable(r, rf, lowCov);
   /* bonds */
   var bonds = r.positions.filter(function (p) { return isBond(p.ins); });
   if (bonds.length) {
@@ -2168,6 +2317,32 @@ function renderAnalysis(host) {
   host.innerHTML = h;
   if ($('anPrices')) $('anPrices').addEventListener('click', openPriceImport);
 }
+/* every asset class seen as a small portfolio of its own */
+function classTable(r, rf, lowCov) {
+  var opts = classOptions(r); if (!opts.length) return '';
+  var n = r.V.length - 1, t = RES.today, y = yearOf(t), tot = r.V[n], m1from = addMonths(t, -1) - r.start, priv = PRIV();
+  function cells(s, a0, ix, isTot) {
+    function pm(a) { a = Math.max(a0, a); return isTot || s.last > a ? periodMetrics(s, a, n, rf, ix) : null; }
+    var m1 = pm(m1from), ytd = pm(eoy(y - 1) - r.start), m12 = n - a0 >= 300 ? pm(n - 365) : null, all = periodMetrics(s, a0, n, rf, ix);
+    var ann = all && all.years >= 1.5 && all.twrAnn != null, f = function (m) { return m ? '<td class="' + sgnCls(m.twr) + '">' + pct(m.twr, 1, true) + '</td>' : '<td>–</td>'; };
+    var since = all ? fmtDay(all.from + (isTot ? 0 : 1)).slice(3) : '';
+    return f(m1) + f(ytd) + f(m12) + (all ? '<td class="' + sgnCls(all.twr) + '">' + pct(ann ? all.twrAnn : all.twr, 1, true) + '<span class="sub">' + (ann ? 'annuo, ' : '') + 'dal ' + since + '</span></td>' : '<td>–</td>') +
+      (lowCov ? '' : '<td>' + (all && all.vol != null ? pct(all.vol, 1) : '–') + '</td>') + (priv ? '' : '<td>' + eur(s.V[n], true) + '</td><td class="' + (all ? sgnCls(all.gain) : '') + '">' + (all ? signedEur(all.gain) : '–') + '</td>');
+  }
+  var h = '<section class="panel" id="clsPanel"><h2>Rendimenti per asset class <small>TWR, con cedole, dividendi e interessi</small></h2><div class="tw"><table class="tbl"><thead><tr><th>Classe</th><th>Peso</th><th>1 mese</th><th>Da inizio anno</th><th>12 mesi</th><th>Dall’inizio' + q('classi') + '</th>' + (lowCov ? '' : '<th>Volatilità</th>') + (priv ? '' : '<th>Valore</th><th>Guadagno</th>') + '</tr></thead><tbody>';
+  opts.forEach(function (k) {
+    var cs = clsOf(r, k), v = cs.V[n], grp = !!CLASS_GROUPS[k];
+    h += '<tr' + (grp ? ' class="grp"' : '') + '><td><span class="sw" style="background:' + (grp ? 'linear-gradient(135deg,' + clsParts(k).map(clsColor).join(' 50%,') + ' 50%)' : clsColor(k)) + '"></span><button type="button" class="link" data-clsgo="' + k + '">' + esc(clsLabel(k)) + '</button>' + (v <= 0.5 ? '<span class="sub">non più in portafoglio</span>' : '') + '</td><td>' + (v > 0.5 && tot > 0 ? pct(v / tot, 1) : '–') + '</td>' + cells(cs, cs.i0, cs.idx, false) + '</tr>';
+  });
+  h += '</tbody><tfoot><tr><td>Tutto il portafoglio</td><td>100%</td>' + cells(r, firstActive(r), idxOf(r), true) + '</tr></tfoot></table></div>';
+  h += '<p class="note">Ogni classe è trattata come un portafoglio a sé: gli acquisti sono soldi che entrano, vendite, cedole, dividendi e interessi soldi che escono. Bollo e liquidità non appartengono a nessuna classe. Tocca il nome di una classe per vederne il grafico.</p></section>';
+  return h;
+}
+document.addEventListener('click', function (e) {
+  var b = e.target.closest('[data-clsgo]'); if (!b) return;
+  UI.cls = b.getAttribute('data-clsgo'); UI.cmode = ''; UI.tab = 'panoramica'; saveUI(); render();
+  var tp = $('trendPanel'); if (tp) tp.scrollIntoView({ block: 'start' });
+});
 
 /* ================= settings ================= */
 function renderSettings(host) {
