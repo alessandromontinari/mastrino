@@ -497,8 +497,10 @@ function runPortfolio(st, pfId, movs, start, today, prices) {
   var negCash = null, minCash = 0, coverage = 0, coverageDays = 0;
   /* per asset class: value (CV), money in (CI: purchases, deposit openings), money out (CO: sales, income, deposit payouts),
      moves between classes (CT, signed: a bond passing from “lungo” to “breve” as it nears maturity) */
-  var CK = CLASSES.map(function (c) { return c.id; }), CV = {}, CI = {}, CO = {}, CT = {}, lastCls = {};
-  CK.forEach(function (k) { CV[k] = new Float64Array(n); CI[k] = new Float64Array(n); CO[k] = new Float64Array(n); CT[k] = new Float64Array(n); });
+  var CK = CLASSES.map(function (c) { return c.id; }), CV = {}, CI = {}, CO = {}, CT = {}, CR = {}, lastCls = {};
+  CK.forEach(function (k) { CV[k] = new Float64Array(n); CI[k] = new Float64Array(n); CO[k] = new Float64Array(n); CT[k] = new Float64Array(n); CR[k] = new Float64Array(n); });
+  /* price quality: value with a real price that day (RV) out of the whole value (TV); gaps = titles without daily prices on the days that are not covered */
+  var RV = new Float64Array(n), TV = new Float64Array(n), gaps = {};
   function clsFor(isin, d) { return lastCls[isin] || classOf(I[isin], d, shortY); }
   function cin(k, idx, a) { if (CI[k]) CI[k][idx] += a; }
   function cout(k, idx, a) { if (CO[k]) CO[k][idx] += a; }
@@ -640,7 +642,7 @@ function runPortfolio(st, pfId, movs, start, today, prices) {
     while (ei < events.length && events[ei].day <= d) { if (events[ei].day === d || events[ei].day < start) process(events[ei], idx); ei++; }
     if (cash < -1 && negCash === null) negCash = d;
     if (cash < minCash) minCash = cash;
-    var v = cash, allExact = true, any = false;
+    var v = cash, allExact = true, any = false, rv = Math.max(0, cash), tv = Math.max(0, cash), miss = [];
     for (var isin in pos) {
       var pp = pos[isin]; if (pp.qty <= 0) { delete lastCls[isin]; continue; }
       var ins2 = I[isin], pr = price(isin, d);
@@ -650,13 +652,19 @@ function runPortfolio(st, pfId, movs, start, today, prices) {
       var pv = pp.qty * pr.v * multOf(ins2);
       if (isBond(ins2)) pv += pp.qty / 100 * accruedPer100(ins2, d);
       v += pv;
-      var ck = classOf(ins2, d, shortY), was = lastCls[isin];
+      var ck = classOf(ins2, d, shortY), was = lastCls[isin], real = pr.exact || (pr.gap && pr.gap <= 6);   /* up to 6 days: weekends and market holidays (Easter, Christmas) */
       if (was && was !== ck && CT[was] && CT[ck]) { CT[was][idx] -= pv; CT[ck][idx] += pv; }
       lastCls[isin] = ck;
-      if (CV[ck]) CV[ck][idx] += pv;
+      if (CV[ck]) { CV[ck][idx] += pv; if (real) CR[ck][idx] += pv; }
+      tv += Math.abs(pv); if (real) rv += Math.abs(pv); else miss.push([isin, Math.abs(pv)]);
     }
-    for (var j = 0; j < deps.length; j++) { var dv = depValue(deps[j], d); v += dv; CV.depositi[idx] += dv; }
-    V[idx] = v;
+    for (var j = 0; j < deps.length; j++) { var dv = depValue(deps[j], d); v += dv; CV.depositi[idx] += dv; CR.depositi[idx] += dv; rv += dv; tv += dv; }
+    V[idx] = v; RV[idx] = rv; TV[idx] = tv;
+    var wd0 = new Date(d * DAYMS).getUTCDay();
+    if (tv > 0 && rv / tv < 0.9 && wd0 > 0 && wd0 < 6) miss.forEach(function (x) {
+      var g = gaps[x[0]] = gaps[x[0]] || { isin: x[0], first: d, last: d, days: 0, w: 0 };
+      g.last = d; g.days++; g.w += x[1] / tv;
+    });
     var wd = new Date(d * DAYMS).getUTCDay();
     if (any && wd > 0 && wd < 6) { coverageDays++; if (allExact) coverage++; }
   }
@@ -673,7 +681,7 @@ function runPortfolio(st, pfId, movs, start, today, prices) {
   var depNow = deps.map(function (dp) { return { dep: dp, value: depValue(dp, today), active: depValue(dp, today) > 0 }; });
   if (negCash !== null) warn('cassa', 'La liquidità del portafoglio va sotto zero dal ' + fmtDay(negCash) + ' (minimo ' + Math.round(minCash).toLocaleString('it-IT') + ' €): probabilmente manca un versamento.', null);
   return { id: pfId, start: start, today: today, V: V, F: F, INC: INC, cash: cash, positions: positions, deposits: depNow, depsAll: deps, zain: zain, realized: realized, income: income, credits: credits, costs: costs,
-    ledger: ledger, warnings: warnings, coverage: coverageDays ? coverage / coverageDays : 0, cls: { V: CV, IN: CI, OUT: CO, TR: CT } };
+    ledger: ledger, warnings: warnings, cls: { V: CV, IN: CI, OUT: CO, TR: CT, RV: CR }, RV: RV, TV: TV, covered: coveredDays(RV, TV), coverage: coverShare(RV, TV, start), priceGaps: gapList(gaps, I) };
 }
 
 function runEngine(st, today) {
@@ -688,12 +696,13 @@ function runEngine(st, today) {
     res.pf[p.id] = runPortfolio(st, p.id, movs.filter(function (m) { return m.pf === p.id; }), start, today, prices);
   });
   /* family */
-  var n = today - start + 1, V = new Float64Array(n), F = new Float64Array(n), INC = new Float64Array(n), byIsin = {}, fc = { V: {}, IN: {}, OUT: {}, TR: {} }, fam = { id: '*', start: start, today: today, cash: 0, positions: [], deposits: [], zain: [], realized: [], income: [], credits: [], costs: [], ledger: [], warnings: [], coverage: 1 };
-  CLASSES.forEach(function (c) { ['V', 'IN', 'OUT', 'TR'].forEach(function (a) { fc[a][c.id] = new Float64Array(n); }); });
+  var n = today - start + 1, V = new Float64Array(n), F = new Float64Array(n), INC = new Float64Array(n), byIsin = {}, fc = { V: {}, IN: {}, OUT: {}, TR: {}, RV: {} }, RV = new Float64Array(n), TV = new Float64Array(n), gapsAll = [], fam = { id: '*', start: start, today: today, cash: 0, positions: [], deposits: [], zain: [], realized: [], income: [], credits: [], costs: [], ledger: [], warnings: [], coverage: 1 };
+  CLASSES.forEach(function (c) { ['V', 'IN', 'OUT', 'TR', 'RV'].forEach(function (a) { fc[a][c.id] = new Float64Array(n); }); });
   Object.keys(res.pf).forEach(function (id) {
     var r = res.pf[id];
-    for (var i = 0; i < n; i++) { V[i] += r.V[i]; F[i] += r.F[i]; INC[i] += r.INC[i]; }
-    CLASSES.forEach(function (c) { ['V', 'IN', 'OUT', 'TR'].forEach(function (a) { var src = r.cls[a][c.id], dst = fc[a][c.id]; for (var i = 0; i < n; i++) dst[i] += src[i]; }); });
+    for (var i = 0; i < n; i++) { V[i] += r.V[i]; F[i] += r.F[i]; INC[i] += r.INC[i]; RV[i] += r.RV[i]; TV[i] += r.TV[i]; }
+    gapsAll = gapsAll.concat(r.priceGaps);
+    CLASSES.forEach(function (c) { ['V', 'IN', 'OUT', 'TR', 'RV'].forEach(function (a) { var src = r.cls[a][c.id], dst = fc[a][c.id]; for (var i = 0; i < n; i++) dst[i] += src[i]; }); });
     fam.cash += r.cash;
     r.positions.forEach(function (p) {
       var b = byIsin[p.isin];
@@ -702,10 +711,11 @@ function runEngine(st, today) {
     });
     ['deposits', 'realized', 'income', 'credits', 'costs', 'ledger', 'warnings'].forEach(function (k) { r[k].forEach(function (x) { fam[k].push(Object.assign({ pf: id }, x)); }); });
     r.zain.forEach(function (z) { fam.zain.push(Object.assign({ pf: id }, z)); });
-    fam.coverage = Math.min(fam.coverage, r.coverage || 0);
   });
   fam.positions = Object.keys(byIsin).map(function (k) { return byIsin[k]; });
-  fam.V = V; fam.F = F; fam.INC = INC; fam.cls = fc;
+  fam.V = V; fam.F = F; fam.INC = INC; fam.cls = fc; fam.RV = RV; fam.TV = TV; fam.covered = coveredDays(RV, TV); fam.coverage = coverShare(RV, TV, start);
+  var gm = {}; gapsAll.forEach(function (g) { var x = gm[g.isin]; if (!x) gm[g.isin] = Object.assign({}, g); else { x.first = Math.min(x.first, g.first); x.last = Math.max(x.last, g.last); x.days = Math.max(x.days, g.days); x.share = Math.max(x.share, g.share); } });
+  fam.priceGaps = Object.keys(gm).map(function (k) { return gm[k]; }).sort(function (a, b) { return b.share * b.days - a.share * a.days; });
   res.family = fam;
   return res;
 }
@@ -737,16 +747,16 @@ var CLASS_GROUPS = { bond: { label: 'Obbligazionario (lunghi e brevi)', parts: [
 /* one asset class (or a group of them) seen as a portfolio of its own: same shape as a portfolio result, so periodMetrics works on it */
 function classSeries(r, k) {
   var parts = CLASS_GROUPS[k] ? CLASS_GROUPS[k].parts : [k], n = r.V.length;
-  var V = new Float64Array(n), IN = new Float64Array(n), OUT = new Float64Array(n), TR = new Float64Array(n), F = new Float64Array(n), i;
+  var V = new Float64Array(n), IN = new Float64Array(n), OUT = new Float64Array(n), TR = new Float64Array(n), F = new Float64Array(n), RVc = new Float64Array(n), TVc = new Float64Array(n), i;
   parts.forEach(function (p) {
-    var a = r.cls.V[p], b = r.cls.IN[p], c = r.cls.OUT[p], t = r.cls.TR[p]; if (!a) return;
-    for (i = 0; i < n; i++) { V[i] += a[i]; IN[i] += b[i]; OUT[i] += c[i]; TR[i] += t[i]; }
+    var a = r.cls.V[p], b = r.cls.IN[p], c = r.cls.OUT[p], t = r.cls.TR[p], rv = r.cls.RV[p]; if (!a) return;
+    for (i = 0; i < n; i++) { V[i] += a[i]; IN[i] += b[i]; OUT[i] += c[i]; TR[i] += t[i]; RVc[i] += rv[i]; TVc[i] += Math.abs(a[i]); }
   });
   for (i = 0; i < n; i++) { if (TR[i] > 0) IN[i] += TR[i]; else OUT[i] -= TR[i]; F[i] = IN[i] - OUT[i]; }
   var first = -1, last = -1;
   for (i = 0; i < n; i++) if (V[i] > 0.01 || IN[i] > 0.01 || OUT[i] > 0.01) { if (first < 0) first = i; last = i; }
   /* i0: the day before the first money went in, so the first purchase (and its commissions) counts as a flow */
-  return { id: r.id + ':' + k, cls: k, start: r.start, V: V, F: F, IN: IN, OUT: OUT, idx: twrIndexIO(V, IN, OUT), first: first, last: last, i0: Math.max(0, first - 1) };
+  return { id: r.id + ':' + k, cls: k, start: r.start, V: V, F: F, IN: IN, OUT: OUT, idx: twrIndexIO(V, IN, OUT), first: first, last: last, i0: Math.max(0, first - 1), covered: coveredDays(RVc, TVc) };
 }
 /* short windows ending today: from the previous business day, from a week ago, from a month ago */
 function prevBusinessDay(d) { d--; for (var k = 0; k < 7; k++) { var wd = new Date(d * DAYMS).getUTCDay(); if (wd > 0 && wd < 6) return d; d--; } return d; }
@@ -766,6 +776,13 @@ function priceFresh(res, r, from, parts) {
     if (startOk && near(a, t)) ok += v;
   });
   return tot > 0 ? ok / tot : 1;
+}
+/* a day is “covered” when at least 90% of the value has a real price that day (not a straight line between two distant prices) */
+function coveredDays(RV, TV) { var n = RV.length, c = new Uint8Array(n); for (var i = 0; i < n; i++) c[i] = TV[i] <= 0 || RV[i] / TV[i] >= 0.9 ? 1 : 0; return c; }
+function coverShare(RV, TV, start) { var a = 0, b = 0; for (var i = 0; i < RV.length; i++) { var wd = new Date((start + i) * DAYMS).getUTCDay(); if (TV[i] > 0 && wd > 0 && wd < 6) { a++; if (RV[i] / TV[i] >= 0.9) b++; } } return a ? b / a : 0; }
+function gapList(gaps, I) {
+  return Object.keys(gaps).map(function (k) { var g = gaps[k]; return { isin: k, name: (I[k] && I[k].name) || k, first: g.first, last: g.last, days: g.days, share: g.w / g.days }; })
+    .filter(function (g) { return g.share >= 0.03; }).sort(function (a, b) { return b.share * b.days - a.share * a.days; });
 }
 function xirr(cfs) {
   if (cfs.length < 2) return null;
@@ -789,16 +806,19 @@ function periodMetrics(series, i0, i1, rf, idx) {
   if (V[i0] <= 1e-6) cfs.shift();
   var irr = xirr(cfs);
   var irrP = irr === null ? null : (T < 1 ? Math.pow(1 + irr, T) - 1 : irr);
-  var rets = [];
-  for (var j = i1; j - 7 >= i0; j -= 7) rets.push(idx[j] / idx[j - 7] - 1);
+  /* risk measures only from weeks whose two ends have real prices; hidden when they are less than 70% of the weeks */
+  var rets = [], cov = series.covered || null, wk = 0;
+  for (var j = i1; j - 7 >= i0; j -= 7) { wk++; if (cov && !(cov[j] && cov[j - 7])) continue; rets.push(idx[j] / idx[j - 7] - 1); }
+  var cover = wk ? rets.length / wk : 0, riskOk = rets.length >= 8 && cover >= 0.7;
   var vol = null;
-  if (rets.length >= 8) { var mu = rets.reduce(function (a, b) { return a + b; }, 0) / rets.length, vv = rets.reduce(function (a, b) { return a + (b - mu) * (b - mu); }, 0) / (rets.length - 1); vol = Math.sqrt(vv) * Math.sqrt(52); }
+  if (riskOk) { var mu = rets.reduce(function (a, b) { return a + b; }, 0) / rets.length, vv = rets.reduce(function (a, b) { return a + (b - mu) * (b - mu); }, 0) / (rets.length - 1); vol = Math.sqrt(vv) * Math.sqrt(52); }
   var ann = T >= 1 ? Math.pow(1 + R, 1 / T) - 1 : null;
   var annForSharpe = T >= 0.5 ? Math.pow(1 + R, 1 / T) - 1 : null;
   var sharpe = vol && annForSharpe !== null && vol > 1e-6 ? (annForSharpe - rf) / vol : null;
-  var peak = idx[i0], mdd = 0;
-  for (i = i0; i <= i1; i++) { if (idx[i] > peak) peak = idx[i]; var dd = 1 - idx[i] / peak; if (dd > mdd) mdd = dd; }
-  return { from: start + i0, to: start + i1, twr: R, twrAnn: ann, irr: irrP, irrAnn: T >= 1 ? irr : null, vol: vol, sharpe: sharpe, mdd: mdd, gain: V[i1] - V[i0] - flows, flows: flows, vStart: V[i0], vEnd: V[i1], years: T };
+  var peak = null, mdd = 0;
+  for (i = i0; i <= i1; i++) { if (cov && !cov[i]) continue; if (peak === null || idx[i] > peak) peak = idx[i]; var dd = 1 - idx[i] / peak; if (dd > mdd) mdd = dd; }
+  if (cov && cover < 0.7) mdd = null;
+  return { from: start + i0, to: start + i1, twr: R, twrAnn: ann, irr: irrP, irrAnn: T >= 1 ? irr : null, vol: vol, sharpe: sharpe, mdd: mdd, cover: cover, weeks: wk, gain: V[i1] - V[i0] - flows, flows: flows, vStart: V[i0], vEnd: V[i1], years: T };
 }
 
 /* ================= bonds ================= */
@@ -1284,7 +1304,7 @@ var GUIDE = [
   } },
   { g: 'Rendimenti e rischio', id: 'vol', t: 'Volatilità', b: function () {
     return '<p>Misura quanto oscilla il portafoglio. È la deviazione standard dei rendimenti settimanali (TWR), riportata su base annua.</p><div class="f">volatilità annua = deviazione standard dei rendimenti settimanali × √52</div>' +
-      '<p>Serve il prezzo di ogni settimana: senza prezzi storici l’app la nasconde, perché con i soli prezzi delle operazioni verrebbe molto più bassa del vero.</p>';
+      '<p>Serve il prezzo vero di ogni settimana: tra due prezzi lontani l’app traccia una linea retta, e la volatilità verrebbe molto più bassa del vero. Per questo usa solo le settimane in cui ha il prezzo vero di almeno il 90% del portafoglio, e mostra volatilità, Sharpe e perdita massima di un periodo solo se queste settimane sono almeno il 70%. Sotto la tabella trovi quali titoli mancano e in che date.</p>';
   } },
   { g: 'Rendimenti e rischio', id: 'sharpe', t: 'Sharpe ratio', b: function () {
     return '<p>Dice quanto rendimento in più rispetto a un investimento senza rischio hai ottenuto per ogni unità di volatilità.</p><div class="f">Sharpe = (rendimento annuo − tasso privo di rischio) / volatilità annua</div>' +
@@ -1902,7 +1922,7 @@ function instrumentForm(isin) {
 /* ================= movements ================= */
 var TYPE_GROUPS = { tutti: null, trade: ['ACQUISTO', 'VENDITA', 'RIMBORSO'], cash: ['VERSAMENTO', 'PRELIEVO'], income: ['CEDOLA', 'DIVIDENDO', 'PROVENTO', 'INTERESSI'], dep: ['DEPOSITO', 'CHIUSURA_DEPOSITO', 'INTERESSI', 'DEP_END'], spese: ['SPESA'] };
 function renderMovements(host) {
-  var h = '<section class="panel"><div class="toolbar"><button type="button" class="btn primary" id="mvNew">+ Nuovo movimento</button><button type="button" class="btn" id="mvImport">Importa storico (CSV)</button><button type="button" class="btn" id="mvPrices">Importa prezzi storici</button><button type="button" class="btn" id="mvExport">Esporta CSV</button><button type="button" class="link" id="mvExample">File di esempio</button></div>';
+  var h = '<section class="panel"><div class="toolbar"><button type="button" class="btn primary" id="mvNew">+ Nuovo movimento</button><button type="button" class="btn" id="mvImport">Importa movimenti (CSV)</button><button type="button" class="btn" id="mvPrices">Importa prezzi storici</button><button type="button" class="btn" id="mvExport">Esporta CSV</button><button type="button" class="link" id="mvExample">File di esempio</button></div>';
   if (!STATE.movements.length) { host.innerHTML = h + '<p class="note">Ancora nessun movimento.</p></section>'; wireMovTools(); return; }
   var r = R(), ids = r.id === '*' ? null : [r.id];
   var cashByMov = {}; (r.ledger || []).forEach(function (l) { if (l.ev.m && l.ev.m.id) cashByMov[l.ev.m.id] = l; });
@@ -2068,7 +2088,7 @@ function depNames() { var s = {}; STATE.movements.forEach(function (m) { if (m.t
 
 /* ---------- CSV import ---------- */
 function openImport() {
-  openSheet('Importa lo storico da CSV', '<p class="note" style="margin-top:0">Righe in qualsiasi ordine, separatore ; oppure , e numeri con la virgola. Date gg/mm/aaaa, mm/gg/aaaa o come numero di Excel. <button type="button" class="link" id="impEx">Scarica il file di esempio</button> per vedere tutte le colonne.</p>' +
+  openSheet('Importa i movimenti da CSV', '<p class="note" style="margin-top:0">Righe in qualsiasi ordine, separatore ; oppure , e numeri con la virgola. Date gg/mm/aaaa, mm/gg/aaaa o come numero di Excel. <button type="button" class="link" id="impEx">Scarica il file di esempio</button> per vedere tutte le colonne.</p>' +
     '<div class="toolbar"><input type="file" id="impFile" accept=".csv,.txt,text/csv,text/plain" class="inp" style="max-width:340px"></div><details><summary class="note" style="cursor:pointer">Oppure incolla il testo</summary><textarea class="inp" id="impText" spellcheck="false" style="margin-top:8px"></textarea><button type="button" class="btn sm" id="impParse" style="margin-top:6px">Leggi il testo</button></details><div id="impOut"></div>',
     '<span></span><span class="bk-row"><button type="button" class="btn" id="impCancel">Annulla</button><button type="button" class="btn primary" id="impGo" disabled>Importa</button></span>', function () {
       var parsed = null;
@@ -2076,6 +2096,15 @@ function openImport() {
       $('impCancel').addEventListener('click', closeSheet);
       function show(text) {
         parsed = parseImport(text);
+        if (!parsed.movements.length && !Object.keys(parsed.instruments).length) {
+          var px = parsePriceMatrix(text), nIs = Object.keys(px.series).length;
+          if (nIs && px.points) {
+            $('impOut').innerHTML = '<div class="formbox"><h4>Questo è un file di prezzi storici</h4><p class="note" style="margin-top:0">Ci sono ' + nf(px.points) + ' prezzi di ' + nIs + (nIs === 1 ? ' titolo' : ' titoli') + ', non movimenti. I prezzi si importano dall’altro pulsante, “Importa prezzi storici”.</p><button type="button" class="btn primary sm" id="impToPx" style="margin-top:8px">Importalo come prezzi storici</button></div>';
+            $('impGo').disabled = true; $('impGo').textContent = 'Importa';
+            $('impToPx').addEventListener('click', function () { closeSheet(); openPriceImport(text); });
+            return;
+          }
+        }
         var c = parsed.counts, known = STATE.portfolios.map(function (p) { return p.name.toLowerCase(); });
         var newPf = parsed.portfolios.filter(function (n) { return known.indexOf(n.toLowerCase()) < 0; });
         var nIns = Object.keys(parsed.instruments).filter(function (k) { return !STATE.instruments[k]; }).length;
@@ -2125,16 +2154,14 @@ function applyImport(imp, replace) {
 }
 
 /* ---------- historical prices import ---------- */
-function openPriceImport() {
+function openPriceImport(preText) {
   openSheet('Importa prezzi storici', '<p class="note" style="margin-top:0">Un file con le date nella prima colonna e gli ISIN nella prima riga (vanno bene anche intestazioni come “IT0005433690 Corp”). Celle vuote, NaN o #N/A vengono saltate. Per i bond usa il prezzo secco per 100.' + q('storico') + '</p>' +
     '<div class="toolbar"><input type="file" id="phFile" accept=".csv,.txt,text/csv,text/plain" class="inp" style="max-width:340px"></div><div id="phOut"></div>',
     '<span></span><span class="bk-row"><button type="button" class="btn" id="phCancel">Annulla</button><button type="button" class="btn primary" id="phGo" disabled>Importa</button></span>', function () {
       var parsed = null;
       $('phCancel').addEventListener('click', closeSheet);
-      $('phFile').addEventListener('change', function () {
-        var f = this.files && this.files[0]; if (!f) return;
-        var rd = new FileReader(); rd.onload = function () {
-          parsed = parsePriceMatrix(rd.result);
+      function showPx(text) {
+          parsed = parsePriceMatrix(text);
           var isins = Object.keys(parsed.series), known = isins.filter(function (k) { return STATE.instruments[k]; }), unk = isins.filter(function (k) { return !STATE.instruments[k]; });
           var h = '<div class="formbox"><h4>' + parsed.points + ' prezzi dal ' + (parsed.from ? fmtDateIT(parsed.from) : '–') + ' al ' + (parsed.to ? fmtDateIT(parsed.to) : '–') + (parsed.dateHow !== 'nessuno' ? ' <span class="muted">(date lette come ' + parsed.dateFmt + ')</span>' : '') + '</h4>' +
             known.map(function (k) { return '<div class="sumrow"><span>' + esc(STATE.instruments[k].name) + ' <span class="mono muted">' + k + '</span></span><span>' + parsed.series[k].length + ' prezzi</span></div>'; }).join('') + '</div>';
@@ -2142,9 +2169,14 @@ function openPriceImport() {
           if (parsed.dateNote) h += '<p class="note">' + esc(parsed.dateNote) + '</p>';
           if (parsed.unknown.length) h += '<p class="note">Colonne senza ISIN, ignorate: ' + parsed.unknown.map(esc).join(', ') + '.</p>';
           parsed.errors.forEach(function (e) { h += '<p class="err">' + esc(e) + '</p>'; });
+          if (!isins.length && parsed.unknown.some(function (x) { return /^"?tipo"?$/i.test(String(x).trim()); })) h += '<p class="note">Sembra il file dei movimenti: quello si importa da “Importa movimenti (CSV)”.</p>';
           $('phOut').innerHTML = h; $('phGo').disabled = !known.length; parsed.known = known;
-        }; rd.readAsText(f);
+      }
+      $('phFile').addEventListener('change', function () {
+        var f = this.files && this.files[0]; if (!f) return;
+        var rd = new FileReader(); rd.onload = function () { showPx(rd.result); }; rd.onerror = function () { toast('Non riesco a leggere il file.'); }; rd.readAsText(f);
       });
+      if (typeof preText === 'string') showPx(preText);
       $('phGo').addEventListener('click', function () {
         var n = 0;
         parsed.known.forEach(function (isin) {
@@ -2278,21 +2310,27 @@ function renderAnalysis(host) {
   if (n - i0 >= 300) rows.push(['Ultimi 12 mesi', periodMetrics(r, Math.max(i0, n - 365), n, rf, idx)]);
   for (var y = yNow - 1; y >= y0; y--) rows.push([String(y), periodMetrics(r, Math.max(i0, eoy(y - 1) - r.start), Math.min(n, eoy(y) - r.start), rf, idx)]);
   rows.push(['Dall’inizio', periodMetrics(r, i0, n, rf, idx)]);
-  var lowCov = r.coverage < 0.6;
+  var noHist = r.coverage < 0.15, someMissing = rows.some(function (x) { return x[1] && !(x[2] && x[2].short) && x[1].vol == null && x[1].weeks >= 8; });
   var h = '<div class="stack"><section class="panel"><h2>Rendimenti e rischio</h2><div class="tw"><table class="tbl"><thead><tr><th>Periodo</th><th>TWR' + q('twr') + '</th><th>IRR' + q('irr') + '</th><th>Volatilità' + q('vol') + '</th><th>Sharpe' + q('sharpe') + '</th><th>Max perdita' + q('mdd') + '</th>' + (PRIV() ? '' : '<th>Guadagno</th><th>Versato netto</th>') + '</tr></thead><tbody>' +
     rows.filter(function (x) { return x[1]; }).map(function (x) {
-      var m = x[1], o = x[2] || {}, showRisk = !lowCov && !o.short;
+      var m = x[1], o = x[2] || {}, showRisk = !o.short && m.vol != null;
       if (o.short) return '<tr><td>' + x[0] + '<span class="sub">dal ' + fmtDay(m.from) + '</span></td><td class="' + sgnFine(m.twr) + '">' + (o.approx ? '≈ ' : '') + pct(m.twr, 2, true) + '</td><td>–</td><td>–</td><td>–</td><td>–</td>' + (PRIV() ? '' : '<td class="' + sgnCls(m.gain) + '">' + eur(m.gain, true) + '</td><td>' + eur(m.flows, true) + '</td>') + '</tr>';
-      return '<tr><td>' + x[0] + (m.years >= 1.5 ? '<span class="sub">annuo</span>' : '') + '</td><td class="' + sgnCls(m.twr) + '">' + pct(m.years >= 1.5 && m.twrAnn != null ? m.twrAnn : m.twr, 2, true) + '</td><td class="' + sgnCls(m.irr || 0) + '">' + pct(m.years >= 1.5 && m.irrAnn != null ? m.irrAnn : m.irr, 2, true) + '</td><td>' + (showRisk ? pct(m.vol, 1) : '–') + '</td><td>' + (showRisk && m.sharpe != null ? nf(m.sharpe, 2) : '–') + '</td><td>' + (showRisk ? pct(-m.mdd, 1) : '–') + '</td>' + (PRIV() ? '' : '<td class="' + sgnCls(m.gain) + '">' + eur(m.gain, true) + '</td><td>' + eur(m.flows, true) + '</td>') + '</tr>';
+      return '<tr><td>' + x[0] + (m.years >= 1.5 ? '<span class="sub">annuo</span>' : '') + '</td><td class="' + sgnCls(m.twr) + '">' + pct(m.years >= 1.5 && m.twrAnn != null ? m.twrAnn : m.twr, 2, true) + '</td><td class="' + sgnCls(m.irr || 0) + '">' + pct(m.years >= 1.5 && m.irrAnn != null ? m.irrAnn : m.irr, 2, true) + '</td><td>' + (showRisk ? pct(m.vol, 1) : '–') + '</td><td>' + (showRisk && m.sharpe != null ? nf(m.sharpe, 2) : '–') + '</td><td>' + (showRisk && m.mdd != null ? pct(-m.mdd, 1) : '–') + '</td>' + (PRIV() ? '' : '<td class="' + sgnCls(m.gain) + '">' + eur(m.gain, true) + '</td><td>' + eur(m.flows, true) + '</td>') + '</tr>';
     }).join('') + '</tbody></table></div>';
   if (rows.some(function (x) { return x[2] && x[2].approx; })) h += '<p class="note">≈ approssimato: per alcuni titoli mancano i prezzi di quei giorni. ' + q('breve') + '</p>';
-  h += lowCov ? '<p class="note"><b>Volatilità, Sharpe e perdita massima non sono affidabili</b> senza prezzi giornalieri: per ora conosco i prezzi solo nei giorni delle operazioni. <button type="button" class="link" id="anPrices">Importa i prezzi storici</button> (per esempio da Bloomberg) per calcolarli.</p>'
-    : '<p class="note">Volatilità e Sharpe da rendimenti settimanali, annualizzati. Tasso privo di rischio ' + nf(STATE.settings.rf, 2) + '% (modificabile nelle impostazioni).</p>';
+  if (noHist) h += '<p class="note"><b>Volatilità, Sharpe e perdita massima non sono affidabili</b> senza prezzi giornalieri: per ora conosco i prezzi solo nei giorni delle operazioni. <button type="button" class="link" id="anPrices">Importa i prezzi storici</button> (per esempio da Bloomberg) per calcolarli.</p>';
+  else {
+    h += '<p class="note">Volatilità e Sharpe da rendimenti settimanali, annualizzati. Tasso privo di rischio ' + nf(STATE.settings.rf, 2) + '% (modificabile nelle impostazioni).</p>';
+    if (someMissing) {
+      var gl = (r.priceGaps || []).slice(0, 4);
+      h += '<p class="note"><b>Dove c’è “–”</b> mancano i prezzi giornalieri di più del 10% del portafoglio' + (gl.length ? ', soprattutto di: ' + gl.map(function (g) { return '<b>' + esc(g.name) + '</b> (dal ' + fmtDay(g.first) + ' al ' + fmtDay(g.last) + ')'; }).join(', ') : '') + '. <button type="button" class="link" id="anPrices">Importa i prezzi</button> che mancano per completarli.' + q('vol') + '</p>';
+    }
+  }
   var bars = rows.filter(function (x) { return x[1] && /^\d{4}$/.test(x[0]); }).reverse().map(function (x) { return { label: x[0], v: x[1].twr }; });
   if (ytdM) bars.push({ label: yNow + ' (in corso)', v: ytdM.twr });
   if (bars.length > 1) h += '<h3>Anno per anno (TWR)</h3>' + barsSVG(bars);
   h += '</section>';
-  h += classTable(r, rf, lowCov);
+  h += classTable(r, rf);
   /* bonds */
   var bonds = r.positions.filter(function (p) { return isBond(p.ins); });
   if (bonds.length) {
@@ -2318,7 +2356,7 @@ function renderAnalysis(host) {
   if ($('anPrices')) $('anPrices').addEventListener('click', openPriceImport);
 }
 /* every asset class seen as a small portfolio of its own */
-function classTable(r, rf, lowCov) {
+function classTable(r, rf) {
   var opts = classOptions(r); if (!opts.length) return '';
   var n = r.V.length - 1, t = RES.today, y = yearOf(t), tot = r.V[n], m1from = addMonths(t, -1) - r.start, priv = PRIV();
   function cells(s, a0, ix, isTot) {
@@ -2327,9 +2365,9 @@ function classTable(r, rf, lowCov) {
     var ann = all && all.years >= 1.5 && all.twrAnn != null, f = function (m) { return m ? '<td class="' + sgnCls(m.twr) + '">' + pct(m.twr, 1, true) + '</td>' : '<td>–</td>'; };
     var since = all ? fmtDay(all.from + (isTot ? 0 : 1)).slice(3) : '';
     return f(m1) + f(ytd) + f(m12) + (all ? '<td class="' + sgnCls(all.twr) + '">' + pct(ann ? all.twrAnn : all.twr, 1, true) + '<span class="sub">' + (ann ? 'annuo, ' : '') + 'dal ' + since + '</span></td>' : '<td>–</td>') +
-      (lowCov ? '' : '<td>' + (all && all.vol != null ? pct(all.vol, 1) : '–') + '</td>') + (priv ? '' : '<td>' + eur(s.V[n], true) + '</td><td class="' + (all ? sgnCls(all.gain) : '') + '">' + (all ? signedEur(all.gain) : '–') + '</td>');
+      '<td>' + (all && all.vol != null ? pct(all.vol, 1) : '–') + '</td>' + (priv ? '' : '<td>' + eur(s.V[n], true) + '</td><td class="' + (all ? sgnCls(all.gain) : '') + '">' + (all ? signedEur(all.gain) : '–') + '</td>');
   }
-  var h = '<section class="panel" id="clsPanel"><h2>Rendimenti per asset class <small>TWR, con cedole, dividendi e interessi</small></h2><div class="tw"><table class="tbl"><thead><tr><th>Classe</th><th>Peso</th><th>1 mese</th><th>Da inizio anno</th><th>12 mesi</th><th>Dall’inizio' + q('classi') + '</th>' + (lowCov ? '' : '<th>Volatilità</th>') + (priv ? '' : '<th>Valore</th><th>Guadagno</th>') + '</tr></thead><tbody>';
+  var h = '<section class="panel" id="clsPanel"><h2>Rendimenti per asset class <small>TWR, con cedole, dividendi e interessi</small></h2><div class="tw"><table class="tbl"><thead><tr><th>Classe</th><th>Peso</th><th>1 mese</th><th>Da inizio anno</th><th>12 mesi</th><th>Dall’inizio' + q('classi') + '</th><th>Volatilità</th>' + (priv ? '' : '<th>Valore</th><th>Guadagno</th>') + '</tr></thead><tbody>';
   opts.forEach(function (k) {
     var cs = clsOf(r, k), v = cs.V[n], grp = !!CLASS_GROUPS[k];
     h += '<tr' + (grp ? ' class="grp"' : '') + '><td><span class="sw" style="background:' + (grp ? 'linear-gradient(135deg,' + clsParts(k).map(clsColor).join(' 50%,') + ' 50%)' : clsColor(k)) + '"></span><button type="button" class="link" data-clsgo="' + k + '">' + esc(clsLabel(k)) + '</button>' + (v <= 0.5 ? '<span class="sub">non più in portafoglio</span>' : '') + '</td><td>' + (v > 0.5 && tot > 0 ? pct(v / tot, 1) : '–') + '</td>' + cells(cs, cs.i0, cs.idx, false) + '</tr>';
@@ -2359,7 +2397,7 @@ function renderSettings(host) {
     '<label class="check" for="sAuto" style="margin-top:10px"><input type="checkbox" id="sAuto"' + (s.autoPrices ? ' checked' : '') + '> Aggiorna i prezzi quando apro l’app (al massimo ogni 30 minuti)</label>' +
     '<div class="toolbar" style="margin:12px 0 0"><button type="button" class="btn sm primary" id="sProxySave">Salva</button><button type="button" class="btn sm" id="sProxyTest">Prova il ponte</button></div><div id="sProxyOut" class="note"></div>' +
     (IN_CLAUDE ? '<p class="note"><b>In questa anteprima dentro Claude</b> la pagina non può collegarsi a siti esterni: i prezzi automatici funzionano solo nell’app installata sul telefono.</p>' : '') + '</section></div>';
-  h += '<div class="stack"><section class="panel"><h2>Dati</h2><div class="toolbar"><button type="button" class="btn sm" id="dCsv">Esporta movimenti (CSV)</button><button type="button" class="btn sm" id="dImp">Importa CSV</button><button type="button" class="btn sm" id="dPx">Importa prezzi storici</button></div>' +
+  h += '<div class="stack"><section class="panel"><h2>Dati</h2><div class="toolbar"><button type="button" class="btn sm" id="dCsv">Esporta movimenti (CSV)</button><button type="button" class="btn sm" id="dImp">Importa movimenti (CSV)</button><button type="button" class="btn sm" id="dPx">Importa prezzi storici</button></div>' +
     '<p class="note">' + STATE.movements.length + ' movimenti, ' + Object.keys(STATE.instruments).length + ' titoli. ' + (storageOK ? 'Salvati su questo dispositivo.' : '<span class="err">Il salvataggio su questo dispositivo non funziona: esporta un backup.</span>') + '</p></section>';
   h += '<section class="panel"><h2>Backup e cambio telefono</h2><div id="backupBox"></div></section>';
   h += '<section class="panel"><h2>Ricomincia</h2><div class="toolbar"><button type="button" class="btn sm" id="dDemo">Carica i dati di esempio</button><button type="button" class="btn sm danger" id="dWipe">Cancella tutti i dati</button></div><p class="note" id="dWipeMsg"></p></section></div></div>';
