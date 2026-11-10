@@ -1293,6 +1293,12 @@ var GUIDE = [
       '<div class="f">rendimento = indice TWR di oggi / indice TWR all’inizio della finestra − 1</div>' +
       '<p>Sono precisi solo se l’app conosce il prezzo di quei giorni: con il ponte i prezzi si accumulano ogni volta che li aggiorni, oppure puoi importare lo storico. Se per un titolo manca il prezzo l’app lo stima con una linea retta tra due prezzi lontani e il numero diventa poco significativo: in quel caso lo segna con ≈.</p>';
   } },
+  { g: 'Rendimenti e rischio', id: 'confronto', t: 'Confronto con gli obiettivi', b: function () {
+    return '<p>Risponde a una domanda: <b>i pesi che hai tenuto davvero hanno reso più o meno dei pesi obiettivo?</b> L’app prende il rendimento giornaliero di ogni tua asset class (lo stesso della tabella “Rendimenti per asset class”) e calcola quanto avrebbe reso un portafoglio con le stesse classi, tenute sempre ai pesi obiettivo.</p>' +
+      '<div class="f">rendimento del giorno = somma di (peso obiettivo × rendimento del giorno della classe)</div>' +
+      '<p>La differenza con il tuo rendimento vero viene quasi tutta da quanto ti sei allontanato dagli obiettivi (più azioni o meno azioni del previsto, liquidità ferma) e dai momenti in cui hai comprato e venduto; in piccola parte da bollo e spese, che il portafoglio teorico non paga. I titoli sono gli stessi in entrambi i casi, quindi la scelta dei titoli non c’entra.</p>' +
+      '<p>Limiti: è un portafoglio teorico, ribilanciato ogni giorno senza costi né tasse; la liquidità rende zero; nei giorni in cui una classe con obiettivo non era ancora (o non era più) in portafoglio, il suo peso viene diviso tra le altre. Usa gli obiettivi di oggi anche per il passato.</p>';
+  } },
   { g: 'Rendimenti e rischio', id: 'classi', t: 'Rendimento di una singola asset class', b: function () {
     return '<p>Ogni asset class (per esempio i metalli preziosi) viene trattata come un portafoglio a sé. I soldi che entrano sono gli acquisti dei suoi titoli (e le aperture dei depositi); quelli che escono sono vendite, rimborsi, cedole, dividendi e interessi, al netto delle tasse trattenute. Così il rendimento non dipende da quanto hai comprato o venduto e puoi confrontare le classi tra loro e con il portafoglio intero.</p>' +
       '<div class="f">rendimento del giorno = (valore di oggi + uscite di oggi) / (valore di ieri + entrate di oggi) − 1\nTWR della classe = (1 + r₁) × (1 + r₂) × … − 1</div>' +
@@ -2331,6 +2337,7 @@ function renderAnalysis(host) {
   if (bars.length > 1) h += '<h3>Anno per anno (TWR)</h3>' + barsSVG(bars);
   h += '</section>';
   h += classTable(r, rf);
+  h += benchPanel(r);
   /* bonds */
   var bonds = r.positions.filter(function (p) { return isBond(p.ins); });
   if (bonds.length) {
@@ -2354,6 +2361,49 @@ function renderAnalysis(host) {
   h += '</section></div>';
   host.innerHTML = h;
   if ($('anPrices')) $('anPrices').addEventListener('click', openPriceImport);
+}
+/* the same asset classes held at the target weights and rebalanced every day: what the classes returned, without the effect of the weights actually held.
+   Classes not in the portfolio that day are left out (their weight goes to the others); cash and deposits without a series return zero. */
+function targetIndex(r, tg) {
+  var n = r.V.length, idx = new Float64Array(n), ks = CLASSES.map(function (c) { return c.id; }).filter(function (k) { return tg[k] > 0; }), ser = {}, first = n;
+  ks.forEach(function (k) { ser[k] = clsOf(r, k); if (ser[k].first >= 0) first = Math.min(first, ser[k].i0); });
+  idx[0] = 1;
+  for (var i = 1; i < n; i++) {
+    var ws = 0, acc = 0;
+    for (var j = 0; j < ks.length; j++) {
+      var k = ks[j], s = ser[k], w = tg[k];
+      if (s.first >= 0 && i > s.i0 && i <= s.last && s.idx[i - 1] > 0) { ws += w; acc += w * (s.idx[i] / s.idx[i - 1] - 1); }
+      else if (k === 'cash' || k === 'depositi') ws += w;
+    }
+    idx[i] = idx[i - 1] * (1 + (ws > 0 ? acc / ws : 0));
+  }
+  return { idx: idx, first: first };
+}
+function benchPanel(r) {
+  var tg = STATE.targets[r.id] || {}, has = CLASSES.some(function (c) { return tg[c.id] > 0; });
+  var h = '<section class="panel" id="benchPanel"><h2>Confronto con gli obiettivi <small>i tuoi pesi veri contro i pesi obiettivo</small></h2>';
+  if (!has) return h + '<p class="note" style="margin:0">Imposta gli obiettivi di asset class nella Panoramica: qui vedrai se i pesi che hai tenuto davvero hanno reso più o meno dei pesi obiettivo.' + q('confronto') + '</p></section>';
+  var T = targetIndex(r, tg), idx = idxOf(r), n = r.V.length - 1, i0 = Math.max(firstActive(r), T.first), yNow = yearOf(RES.today), y0 = yearOf(r.start + i0), rows = [];
+  if (i0 >= n) return h + '<p class="note" style="margin:0">Nessuna delle classi con un obiettivo è ancora in portafoglio.</p></section>';
+  function row(label, a, b) {
+    a = Math.max(i0, a); b = Math.min(n, b); if (b - a < 5) return;
+    var yrs = (b - a) / 365, ann = yrs >= 1.5, me = idx[b] / idx[a] - 1, tt = T.idx[b] / T.idx[a] - 1;
+    if (ann) { me = Math.pow(1 + me, 1 / yrs) - 1; tt = Math.pow(1 + tt, 1 / yrs) - 1; }
+    rows.push({ label: label, ann: ann, me: me, tt: tt });
+  }
+  row('Da inizio anno', eoy(yNow - 1) - r.start, n);
+  if (n - i0 >= 300) row('Ultimi 12 mesi', n - 365, n);
+  for (var y = yNow - 1; y >= y0; y--) row(String(y), eoy(y - 1) - r.start, eoy(y) - r.start);
+  row('Dall’inizio', i0, n);
+  if (!rows.length) return h + '<p class="note" style="margin:0">Serve qualche giorno di storia in più.</p></section>';
+  h += '<div class="tw"><table class="tbl"><thead><tr><th>Periodo</th><th>Il tuo portafoglio</th><th>Con i pesi obiettivo' + q('confronto') + '</th><th>Differenza</th></tr></thead><tbody>' + rows.map(function (x) {
+    var d = x.me - x.tt;
+    return '<tr><td>' + x.label + (x.ann ? '<span class="sub">annuo</span>' : '') + '</td><td class="' + sgnCls(x.me) + '">' + pct(x.me, 2, true) + '</td><td class="' + sgnCls(x.tt) + '">' + pct(x.tt, 2, true) + '</td><td class="' + sgnFine(d) + '" style="font-weight:700">' + pct(d, 2, true).replace('%', ' pt') + '</td></tr>';
+  }).join('') + '</tbody></table></div>';
+  var last = rows[rows.length - 1], dl = last.me - last.tt;
+  h += '<p class="note">' + (Math.abs(dl) < 0.0015 ? 'Dall’inizio i tuoi pesi hanno reso più o meno come gli obiettivi.' : dl > 0 ? 'Dall’inizio allontanarti dagli obiettivi ti ha <b>aiutato</b>: ' + pct(dl, 2).replace('%', ' punti') + (last.ann ? ' l’anno' : '') + ' in più.' : 'Dall’inizio allontanarti dagli obiettivi ti è <b>costato</b> ' + pct(-dl, 2).replace('%', ' punti') + (last.ann ? ' l’anno' : '') + '.') +
+    ' Stesse classi e stessi titoli, cambiano solo i pesi: quelli obiettivo sono tenuti fissi ogni giorno, senza costi né tasse, e la liquidità rende zero. Dal ' + fmtDay(r.start + i0) + '.</p></section>';
+  return h;
 }
 /* every asset class seen as a small portfolio of its own */
 function classTable(r, rf) {

@@ -1,6 +1,6 @@
 /* Mastrino service worker: keeps the app usable offline. */
 const PREFIX = 'mastrino-';
-const CACHE = PREFIX + '2026-10-23-2';
+const CACHE = PREFIX + '2026-11-09-1';
 const PRECACHE = [
   "./",
   "./index.html",
